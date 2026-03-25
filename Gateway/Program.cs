@@ -8,16 +8,23 @@ using System.Threading;
 
 class Gateway
 {
+    // ── Ligação ao Servidor ──────────────────────────────────────────────────
     static StreamWriter writerServidor;
     static StreamReader readerServidor;
+
+    // ── Ficheiro de configuração CSV ─────────────────────────────────────────
     static string ficheiroCSV = "sensores.csv";
 
+    // ── Mutexes ──────────────────────────────────────────────────────────────
+    // mutexCSV: protege leituras e escritas ao ficheiro sensores.csv
     static Mutex mutexCSV = new Mutex();
+    // mutexServidor: garante que só um thread escreve/lê do servidor de cada vez
     static Mutex mutexServidor = new Mutex();
 
-    // Timeout em segundos (90 segundos = 3 heartbeats perdidos)
+    // Timeout: 90 segundos = 3 heartbeats perdidos (intervalo de 30s)
     static int timeoutSegundos = 90;
 
+    // ── Modelo de dados ──────────────────────────────────────────────────────
     class InfoSensor
     {
         public string Estado;
@@ -26,6 +33,8 @@ class Gateway
         public string LastSync;
     }
 
+    // ── CSV: Carregar ────────────────────────────────────────────────────────
+    // Não usa mutex internamente — o chamador é responsável por adquirir mutexCSV.
     static Dictionary<string, InfoSensor> CarregarCSV()
     {
         var sensores = new Dictionary<string, InfoSensor>();
@@ -37,18 +46,27 @@ class Gateway
             string[] partes = linha.Split(':');
             if (partes.Length < 5) continue;
 
+            // Formato: sensor_id:estado:zona:[TIPO1,TIPO2]:last_sync
             string tiposStr = partes[3].Trim('[', ']');
+            List<string> tipos = new List<string>();
+            foreach (string t in tiposStr.Split(','))
+            {
+                string tt = t.Trim();
+                if (!string.IsNullOrEmpty(tt)) tipos.Add(tt);
+            }
+
             sensores[partes[0]] = new InfoSensor
             {
                 Estado = partes[1],
                 Zona = partes[2],
-                Tipos = new List<string>(tiposStr.Split(',')),
+                Tipos = tipos,
                 LastSync = partes[4]
             };
         }
         return sensores;
     }
 
+    // ── CSV: Atualizar last_sync ─────────────────────────────────────────────
     static void AtualizarLastSync(string sensorId)
     {
         mutexCSV.WaitOne();
@@ -62,15 +80,23 @@ class Gateway
                 if (linhas[i].StartsWith(sensorId + ":"))
                 {
                     string[] partes = linhas[i].Split(':');
-                    if (partes.Length >= 5) { partes[4] = agora; linhas[i] = string.Join(":", partes); }
+                    if (partes.Length >= 5)
+                    {
+                        partes[4] = agora;
+                        linhas[i] = string.Join(":", partes);
+                    }
                 }
             }
             File.WriteAllLines(ficheiroCSV, linhas);
         }
-        finally { mutexCSV.ReleaseMutex(); }
+        finally
+        {
+            mutexCSV.ReleaseMutex();
+        }
     }
 
-    static void MarcarSensorInativo(string sensorId)
+    // ── CSV: Marcar sensor como desativado ───────────────────────────────────
+    static void MarcarSensorDesativado(string sensorId)
     {
         mutexCSV.WaitOne();
         try
@@ -82,26 +108,42 @@ class Gateway
                 if (linhas[i].StartsWith(sensorId + ":"))
                 {
                     string[] partes = linhas[i].Split(':');
-                    if (partes.Length >= 5) { partes[1] = "desativado"; linhas[i] = string.Join(":", partes); }
+                    if (partes.Length >= 5)
+                    {
+                        partes[1] = "desativado";
+                        linhas[i] = string.Join(":", partes);
+                    }
                 }
             }
             File.WriteAllLines(ficheiroCSV, linhas);
-            Console.WriteLine($"[GATEWAY] Sensor {sensorId} marcado como desativado por timeout!");
+            Console.WriteLine($"[GATEWAY] Sensor {sensorId} marcado como desativado por timeout.");
         }
-        finally { mutexCSV.ReleaseMutex(); }
+        finally
+        {
+            mutexCSV.ReleaseMutex();
+        }
     }
 
-    // Thread que verifica heartbeats em background
+    // ── Thread: monitorização de heartbeats ──────────────────────────────────
+    // Corre em background. A cada 30 segundos verifica todos os sensores ativos.
+    // Se um sensor ativo não enviou heartbeat há mais de 90 segundos, desativa-o.
     static void MonitorizarHeartbeats()
     {
         while (true)
         {
-            Thread.Sleep(30000); // verifica a cada 30 segundos
+            Thread.Sleep(30000);
 
-            mutexCSV.WaitOne();
+            // Lemos o CSV com mutex para obter snapshot consistente
             Dictionary<string, InfoSensor> sensores;
-            try { sensores = CarregarCSV(); }
-            finally { mutexCSV.ReleaseMutex(); }
+            mutexCSV.WaitOne();
+            try
+            {
+                sensores = CarregarCSV();
+            }
+            finally
+            {
+                mutexCSV.ReleaseMutex();
+            }
 
             foreach (var par in sensores)
             {
@@ -115,14 +157,15 @@ class Gateway
                     double segundosPassados = (DateTime.Now - lastSync).TotalSeconds;
                     if (segundosPassados > timeoutSegundos)
                     {
-                        Console.WriteLine($"[GATEWAY] Sensor {id} sem heartbeat há {(int)segundosPassados}s.");
-                        MarcarSensorInativo(id);
+                        Console.WriteLine($"[GATEWAY] Sensor {id} sem heartbeat há {(int)segundosPassados}s. A desativar.");
+                        MarcarSensorDesativado(id);
                     }
                 }
             }
         }
     }
 
+    // ── Thread: tratar um sensor ─────────────────────────────────────────────
     static void TratarSensor(object obj)
     {
         TcpClient clienteSensor = (TcpClient)obj;
@@ -130,106 +173,201 @@ class Gateway
         StreamReader readerSensor = new StreamReader(streamSensor, Encoding.UTF8);
         StreamWriter writerSensor = new StreamWriter(streamSensor, Encoding.UTF8) { AutoFlush = true };
 
-        mutexCSV.WaitOne();
-        Dictionary<string, InfoSensor> sensores;
-        try { sensores = CarregarCSV(); }
-        finally { mutexCSV.ReleaseMutex(); }
-
         string sensorId = "";
         string zona = "";
-        string linha;
 
-        while ((linha = readerSensor.ReadLine()) != null)
+        try
         {
-            Console.WriteLine($"[GATEWAY] Recebido: {linha}");
-            string[] partes = linha.Split('|');
-
-            if (partes[0] == "HELLO" && partes.Length == 4)
+            string linha;
+            while ((linha = readerSensor.ReadLine()) != null)
             {
-                sensorId = partes[1];
-                if (!sensores.ContainsKey(sensorId))
-                {
-                    Console.WriteLine($"[GATEWAY] Sensor {sensorId} não registado.");
-                    writerSensor.WriteLine("ERROR"); break;
-                }
-                if (sensores[sensorId].Estado != "ativo")
-                {
-                    Console.WriteLine($"[GATEWAY] Sensor {sensorId} está {sensores[sensorId].Estado}.");
-                    writerSensor.WriteLine("ERROR"); break;
-                }
-                zona = sensores[sensorId].Zona;
-                Console.WriteLine($"[GATEWAY] Sensor {sensorId} validado. Zona: {zona}");
-                AtualizarLastSync(sensorId);
-                writerSensor.WriteLine("ACK");
-            }
-            else if (partes[0] == "DATA" && partes.Length == 5)
-            {
-                string tipoDado = partes[2];
-                string valor = partes[3];
-                string timestamp = partes[4];
+                Console.WriteLine($"[GATEWAY] Recebido: {linha}");
+                string[] partes = linha.Split('|');
 
-                if (sensores.ContainsKey(sensorId) && !sensores[sensorId].Tipos.Contains(tipoDado))
+                // ── HELLO ──────────────────────────────────────────────────
+                if (partes[0] == "HELLO" && partes.Length == 4)
                 {
-                    Console.WriteLine($"[GATEWAY] Tipo {tipoDado} não suportado.");
-                    writerSensor.WriteLine("ERROR"); continue;
-                }
+                    sensorId = partes[1];
+                    // partes[2] = zona enviada pelo sensor (usada apenas para log)
+                    // partes[3] = tipos declarados pelo sensor (apenas informativo;
+                    //             a validação real é feita contra o CSV)
 
-                mutexServidor.WaitOne();
-                try
-                {
-                    string msg = $"DATA|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
-                    writerServidor.WriteLine(msg);
-                    string resp = readerServidor.ReadLine();
-                    Console.WriteLine($"[GATEWAY] Servidor respondeu: {resp}");
+                    // Carregar estado atual do CSV com mutex
+                    Dictionary<string, InfoSensor> sensores;
+                    mutexCSV.WaitOne();
+                    try { sensores = CarregarCSV(); }
+                    finally { mutexCSV.ReleaseMutex(); }
+
+                    if (!sensores.ContainsKey(sensorId))
+                    {
+                        Console.WriteLine($"[GATEWAY] Sensor {sensorId} não registado no CSV.");
+                        writerSensor.WriteLine("ERROR");
+                        break;
+                    }
+
+                    if (sensores[sensorId].Estado != "ativo")
+                    {
+                        Console.WriteLine($"[GATEWAY] Sensor {sensorId} está '{sensores[sensorId].Estado}'.");
+                        writerSensor.WriteLine("ERROR");
+                        break;
+                    }
+
+                    zona = sensores[sensorId].Zona;
+                    Console.WriteLine($"[GATEWAY] Sensor {sensorId} validado. Zona: {zona}");
                     AtualizarLastSync(sensorId);
-                    writerSensor.WriteLine(resp);
+                    writerSensor.WriteLine("ACK");
                 }
-                finally { mutexServidor.ReleaseMutex(); }
-            }
-            else if (partes[0] == "HEARTBEAT" && partes.Length == 2)
-            {
-                Console.WriteLine($"[GATEWAY] Heartbeat de {partes[1]}.");
-                AtualizarLastSync(partes[1]);
-                writerSensor.WriteLine("ACK");
-            }
-            else if (partes[0] == "BYE" && partes.Length == 2)
-            {
-                Console.WriteLine($"[GATEWAY] Sensor {partes[1]} desligou.");
-                writerSensor.WriteLine("ACK"); break;
-            }
-            else
-            {
-                writerSensor.WriteLine("ERROR");
+
+                // ── DATA ───────────────────────────────────────────────────
+                // Formato recebido do sensor: DATA|id|tipo|valor|timestamp
+                else if (partes[0] == "DATA" && partes.Length == 5)
+                {
+                    if (string.IsNullOrEmpty(sensorId))
+                    {
+                        // Sensor tentou enviar DATA sem HELLO
+                        writerSensor.WriteLine("ERROR");
+                        continue;
+                    }
+
+                    string tipoDado = partes[2];
+                    string valor = partes[3];
+                    string timestamp = partes[4];
+
+                    // Revalidar sensor e tipo no CSV (pode ter mudado desde o HELLO)
+                    Dictionary<string, InfoSensor> sensores;
+                    mutexCSV.WaitOne();
+                    try { sensores = CarregarCSV(); }
+                    finally { mutexCSV.ReleaseMutex(); }
+
+                    if (!sensores.ContainsKey(sensorId) || sensores[sensorId].Estado != "ativo")
+                    {
+                        Console.WriteLine($"[GATEWAY] Sensor {sensorId} já não está ativo.");
+                        writerSensor.WriteLine("ERROR");
+                        continue;
+                    }
+
+                    if (!sensores[sensorId].Tipos.Contains(tipoDado))
+                    {
+                        Console.WriteLine($"[GATEWAY] Tipo '{tipoDado}' não suportado pelo sensor {sensorId}.");
+                        writerSensor.WriteLine("ERROR");
+                        continue;
+                    }
+
+                    // Encaminhar para o servidor
+                    // Formato para o servidor: DATA|id|zona|tipo|valor|timestamp
+                    string msgServidor = $"DATA|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
+
+                    string respostaServidor;
+                    mutexServidor.WaitOne();
+                    try
+                    {
+                        writerServidor.WriteLine(msgServidor);
+                        respostaServidor = readerServidor.ReadLine();
+                        Console.WriteLine($"[GATEWAY] Servidor respondeu: {respostaServidor}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[GATEWAY] Erro na comunicação com o servidor: {ex.Message}");
+                        respostaServidor = "ERROR";
+                    }
+                    finally
+                    {
+                        mutexServidor.ReleaseMutex();
+                    }
+
+                    AtualizarLastSync(sensorId);
+                    writerSensor.WriteLine(respostaServidor ?? "ERROR");
+                }
+
+                // ── HEARTBEAT ──────────────────────────────────────────────
+                else if (partes[0] == "HEARTBEAT" && partes.Length == 2)
+                {
+                    string hbId = partes[1];
+                    Console.WriteLine($"[GATEWAY] Heartbeat de {hbId}.");
+                    AtualizarLastSync(hbId);
+                    writerSensor.WriteLine("ACK");
+                }
+
+                // ── BYE ────────────────────────────────────────────────────
+                else if (partes[0] == "BYE" && partes.Length == 2)
+                {
+                    Console.WriteLine($"[GATEWAY] Sensor {partes[1]} desligou-se.");
+                    writerSensor.WriteLine("ACK");
+                    break;
+                }
+
+                // ── Mensagem desconhecida ──────────────────────────────────
+                else
+                {
+                    Console.WriteLine($"[GATEWAY] Mensagem inválida: {linha}");
+                    writerSensor.WriteLine("ERROR");
+                }
             }
         }
-
-        clienteSensor.Close();
-        Console.WriteLine($"[GATEWAY] Thread do sensor {sensorId} encerrada.");
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GATEWAY] Erro na thread do sensor {sensorId}: {ex.Message}");
+        }
+        finally
+        {
+            clienteSensor.Close();
+            Console.WriteLine($"[GATEWAY] Thread do sensor {sensorId} encerrada.");
+        }
     }
 
+    // ── Main ─────────────────────────────────────────────────────────────────
     static void Main(string[] args)
     {
-        TcpClient clienteServidor = new TcpClient("127.0.0.1", 6000);
-        NetworkStream streamServidor = clienteServidor.GetStream();
-        writerServidor = new StreamWriter(streamServidor, Encoding.UTF8) { AutoFlush = true };
-        readerServidor = new StreamReader(streamServidor, Encoding.UTF8);
-        Console.WriteLine("[GATEWAY] Ligado ao Servidor.");
+        // Verificar se o CSV de configuração existe
+        if (!File.Exists(ficheiroCSV))
+        {
+            Console.WriteLine($"[GATEWAY] AVISO: ficheiro '{ficheiroCSV}' não encontrado.");
+            Console.WriteLine("[GATEWAY] Cria o ficheiro com o formato:");
+            Console.WriteLine("  sensor_id:estado:zona:[TIPO1,TIPO2]:last_sync");
+            Console.WriteLine("  Ex: S101:ativo:ZONA_CENTRO:[TEMP,HUM,RUIDO]:2026-01-01T00:00:00");
+        }
 
-        // Arranca thread de monitorização de heartbeats
+        // Ligar ao Servidor
+        string servidorIP = args.Length > 0 ? args[0] : "127.0.0.1";
+        try
+        {
+            TcpClient clienteServidor = new TcpClient(servidorIP, 6000);
+            NetworkStream streamServidor = clienteServidor.GetStream();
+            writerServidor = new StreamWriter(streamServidor, Encoding.UTF8) { AutoFlush = true };
+            readerServidor = new StreamReader(streamServidor, Encoding.UTF8);
+            Console.WriteLine($"[GATEWAY] Ligado ao Servidor em {servidorIP}:6000.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[GATEWAY] Erro ao ligar ao Servidor em {servidorIP}:6000 -> {ex.Message}");
+            return;
+        }
+
+        // Arrancar thread de monitorização de heartbeats em background
         Thread monitorThread = new Thread(MonitorizarHeartbeats);
         monitorThread.IsBackground = true;
         monitorThread.Start();
-        Console.WriteLine("[GATEWAY] Monitorização de heartbeats ativa.");
+        Console.WriteLine("[GATEWAY] Monitorização de heartbeats ativa (timeout: 90s).");
 
+        // Escutar sensores na porta 5000
         TcpListener listener = new TcpListener(IPAddress.Any, 5000);
         listener.Start();
         Console.WriteLine("[GATEWAY] A escutar sensores na porta 5000...");
 
         while (true)
         {
-            TcpClient clienteSensor = listener.AcceptTcpClient();
-            Thread t = new Thread(TratarSensor);
-            t.Start(clienteSensor);
+            try
+            {
+                TcpClient clienteSensor = listener.AcceptTcpClient();
+                Console.WriteLine("[GATEWAY] Novo sensor ligado. A criar thread...");
+                Thread t = new Thread(TratarSensor);
+                t.IsBackground = true;
+                t.Start(clienteSensor);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GATEWAY] Erro ao aceitar ligação: {ex.Message}");
+            }
         }
     }
 }
