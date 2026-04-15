@@ -8,13 +8,9 @@ using Microsoft.Data.Sqlite;
 
 class Servidor
 {
-    // ── Base de dados ────────────────────────────────────────────────────────
     static string dbPath = "medicoes.db";
-
-    // mutexDB: garante acesso sequencial à base de dados SQLite
     static Mutex mutexDB = new Mutex();
 
-    // ── Inicializar base de dados ────────────────────────────────────────────
     static void InicializarDB()
     {
         mutexDB.WaitOne();
@@ -23,7 +19,6 @@ class Servidor
             using var conn = new SqliteConnection($"Data Source={dbPath}");
             conn.Open();
 
-            // Tabela principal de medições
             string sqlMedicoes = @"
                 CREATE TABLE IF NOT EXISTS medicoes (
                     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -35,7 +30,6 @@ class Servidor
                 )";
             new SqliteCommand(sqlMedicoes, conn).ExecuteNonQuery();
 
-            // Índice para acelerar consultas por zona e tipo
             string sqlIdx = @"
                 CREATE INDEX IF NOT EXISTS idx_zona_tipo
                 ON medicoes(zona, tipo_dado)";
@@ -53,7 +47,6 @@ class Servidor
         }
     }
 
-    // ── Guardar medição na base de dados ─────────────────────────────────────
     static bool GuardarMedicao(string timestamp, string sensorId, string zona, string tipoDado, string valor)
     {
         mutexDB.WaitOne();
@@ -85,7 +78,6 @@ class Servidor
         }
     }
 
-    // ── Thread: tratar um gateway ────────────────────────────────────────────
     static void TratarGateway(object obj)
     {
         TcpClient cliente = (TcpClient)obj;
@@ -104,8 +96,6 @@ class Servidor
                 Console.WriteLine($"[SERVIDOR] [{enderecoGateway}] Recebido: {linha}");
                 string[] partes = linha.Split('|');
 
-                // ── DATA ───────────────────────────────────────────────────
-                // Formato esperado: DATA|sensor_id|zona|tipo_dado|valor|timestamp
                 if (partes[0] == "DATA" && partes.Length == 6)
                 {
                     string sensorId = partes[1];
@@ -114,7 +104,6 @@ class Servidor
                     string valor = partes[4];
                     string timestamp = partes[5];
 
-                    // Validações básicas
                     if (string.IsNullOrWhiteSpace(sensorId) ||
                         string.IsNullOrWhiteSpace(zona) ||
                         string.IsNullOrWhiteSpace(tipoDado) ||
@@ -129,8 +118,6 @@ class Servidor
                     bool sucesso = GuardarMedicao(timestamp, sensorId, zona, tipoDado, valor);
                     writer.WriteLine(sucesso ? "ACK" : "ERROR");
                 }
-
-                // ── Mensagem desconhecida ──────────────────────────────────
                 else
                 {
                     Console.WriteLine($"[SERVIDOR] Mensagem inválida de {enderecoGateway}: {linha}");
@@ -149,7 +136,6 @@ class Servidor
         }
     }
 
-    // ── Main ─────────────────────────────────────────────────────────────────
     static void Main(string[] args)
     {
         InicializarDB();

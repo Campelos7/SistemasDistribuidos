@@ -8,23 +8,13 @@ using System.Threading;
 
 class Gateway
 {
-    // ── Ligação ao Servidor ──────────────────────────────────────────────────
     static StreamWriter writerServidor;
     static StreamReader readerServidor;
-
-    // ── Ficheiro de configuração CSV ─────────────────────────────────────────
     static string ficheiroCSV = "sensores.csv";
-
-    // ── Mutexes ──────────────────────────────────────────────────────────────
-    // mutexCSV: protege leituras e escritas ao ficheiro sensores.csv
     static Mutex mutexCSV = new Mutex();
-    // mutexServidor: garante que só um thread escreve/lê do servidor de cada vez
     static Mutex mutexServidor = new Mutex();
-
-    // Timeout: 90 segundos = 3 heartbeats perdidos (intervalo de 30s)
     static int timeoutSegundos = 90;
 
-    // ── Modelo de dados ──────────────────────────────────────────────────────
     class InfoSensor
     {
         public string Estado;
@@ -33,8 +23,6 @@ class Gateway
         public string LastSync;
     }
 
-    // ── CSV: Carregar ────────────────────────────────────────────────────────
-    // Não usa mutex internamente — o chamador é responsável por adquirir mutexCSV.
     static Dictionary<string, InfoSensor> CarregarCSV()
     {
         var sensores = new Dictionary<string, InfoSensor>();
@@ -46,7 +34,6 @@ class Gateway
             string[] partes = linha.Split(':');
             if (partes.Length < 5) continue;
 
-            // Formato: sensor_id:estado:zona:[TIPO1,TIPO2]:last_sync
             string tiposStr = partes[3].Trim('[', ']');
             List<string> tipos = new List<string>();
             foreach (string t in tiposStr.Split(','))
@@ -66,7 +53,6 @@ class Gateway
         return sensores;
     }
 
-    // ── CSV: Atualizar last_sync ─────────────────────────────────────────────
     static void AtualizarLastSync(string sensorId)
     {
         mutexCSV.WaitOne();
@@ -95,7 +81,6 @@ class Gateway
         }
     }
 
-    // ── CSV: Marcar sensor como desativado ───────────────────────────────────
     static void MarcarSensorDesativado(string sensorId)
     {
         mutexCSV.WaitOne();
@@ -124,32 +109,20 @@ class Gateway
         }
     }
 
-    // ── Thread: monitorização de heartbeats ──────────────────────────────────
-    // Corre em background. A cada 30 segundos verifica todos os sensores ativos.
-    // Se um sensor ativo não enviou heartbeat há mais de 90 segundos, desativa-o.
     static void MonitorizarHeartbeats()
     {
         while (true)
         {
             Thread.Sleep(30000);
-
-            // Lemos o CSV com mutex para obter snapshot consistente
             Dictionary<string, InfoSensor> sensores;
             mutexCSV.WaitOne();
-            try
-            {
-                sensores = CarregarCSV();
-            }
-            finally
-            {
-                mutexCSV.ReleaseMutex();
-            }
+            try { sensores = CarregarCSV(); }
+            finally { mutexCSV.ReleaseMutex(); }
 
             foreach (var par in sensores)
             {
                 string id = par.Key;
                 InfoSensor info = par.Value;
-
                 if (info.Estado != "ativo") continue;
 
                 if (DateTime.TryParse(info.LastSync, out DateTime lastSync))
@@ -165,7 +138,6 @@ class Gateway
         }
     }
 
-    // ── Thread: tratar um sensor ─────────────────────────────────────────────
     static void TratarSensor(object obj)
     {
         TcpClient clienteSensor = (TcpClient)obj;
@@ -184,15 +156,9 @@ class Gateway
                 Console.WriteLine($"[GATEWAY] Recebido: {linha}");
                 string[] partes = linha.Split('|');
 
-                // ── HELLO ──────────────────────────────────────────────────
                 if (partes[0] == "HELLO" && partes.Length == 4)
                 {
                     sensorId = partes[1];
-                    // partes[2] = zona enviada pelo sensor (usada apenas para log)
-                    // partes[3] = tipos declarados pelo sensor (apenas informativo;
-                    //             a validação real é feita contra o CSV)
-
-                    // Carregar estado atual do CSV com mutex
                     Dictionary<string, InfoSensor> sensores;
                     mutexCSV.WaitOne();
                     try { sensores = CarregarCSV(); }
@@ -217,14 +183,10 @@ class Gateway
                     AtualizarLastSync(sensorId);
                     writerSensor.WriteLine("ACK");
                 }
-
-                // ── DATA ───────────────────────────────────────────────────
-                // Formato recebido do sensor: DATA|id|tipo|valor|timestamp
                 else if (partes[0] == "DATA" && partes.Length == 5)
                 {
                     if (string.IsNullOrEmpty(sensorId))
                     {
-                        // Sensor tentou enviar DATA sem HELLO
                         writerSensor.WriteLine("ERROR");
                         continue;
                     }
@@ -233,7 +195,6 @@ class Gateway
                     string valor = partes[3];
                     string timestamp = partes[4];
 
-                    // Revalidar sensor e tipo no CSV (pode ter mudado desde o HELLO)
                     Dictionary<string, InfoSensor> sensores;
                     mutexCSV.WaitOne();
                     try { sensores = CarregarCSV(); }
@@ -253,10 +214,7 @@ class Gateway
                         continue;
                     }
 
-                    // Encaminhar para o servidor
-                    // Formato para o servidor: DATA|id|zona|tipo|valor|timestamp
                     string msgServidor = $"DATA|{sensorId}|{zona}|{tipoDado}|{valor}|{timestamp}";
-
                     string respostaServidor;
                     mutexServidor.WaitOne();
                     try
@@ -278,8 +236,6 @@ class Gateway
                     AtualizarLastSync(sensorId);
                     writerSensor.WriteLine(respostaServidor ?? "ERROR");
                 }
-
-                // ── HEARTBEAT ──────────────────────────────────────────────
                 else if (partes[0] == "HEARTBEAT" && partes.Length == 2)
                 {
                     string hbId = partes[1];
@@ -287,16 +243,12 @@ class Gateway
                     AtualizarLastSync(hbId);
                     writerSensor.WriteLine("ACK");
                 }
-
-                // ── BYE ────────────────────────────────────────────────────
                 else if (partes[0] == "BYE" && partes.Length == 2)
                 {
                     Console.WriteLine($"[GATEWAY] Sensor {partes[1]} desligou-se.");
                     writerSensor.WriteLine("ACK");
                     break;
                 }
-
-                // ── Mensagem desconhecida ──────────────────────────────────
                 else
                 {
                     Console.WriteLine($"[GATEWAY] Mensagem inválida: {linha}");
@@ -315,10 +267,8 @@ class Gateway
         }
     }
 
-    // ── Main ─────────────────────────────────────────────────────────────────
     static void Main(string[] args)
     {
-        // Verificar se o CSV de configuração existe
         if (!File.Exists(ficheiroCSV))
         {
             Console.WriteLine($"[GATEWAY] AVISO: ficheiro '{ficheiroCSV}' não encontrado.");
@@ -327,7 +277,6 @@ class Gateway
             Console.WriteLine("  Ex: S101:ativo:ZONA_CENTRO:[TEMP,HUM,RUIDO]:2026-01-01T00:00:00");
         }
 
-        // Ligar ao Servidor
         string servidorIP = args.Length > 0 ? args[0] : "127.0.0.1";
         try
         {
@@ -343,13 +292,11 @@ class Gateway
             return;
         }
 
-        // Arrancar thread de monitorização de heartbeats em background
         Thread monitorThread = new Thread(MonitorizarHeartbeats);
         monitorThread.IsBackground = true;
         monitorThread.Start();
         Console.WriteLine("[GATEWAY] Monitorização de heartbeats ativa (timeout: 90s).");
 
-        // Escutar sensores na porta 5000
         TcpListener listener = new TcpListener(IPAddress.Any, 5000);
         listener.Start();
         Console.WriteLine("[GATEWAY] A escutar sensores na porta 5000...");

@@ -9,17 +9,12 @@ class Sensor
     static StreamWriter writer;
     static StreamReader reader;
     static TcpClient cliente;
-
-    // Flag para sinalizar ao heartbeat que deve parar
     static volatile bool emExecucao = true;
-    // Mutex para proteger escritas no socket (DATA e HEARTBEAT podem colidir)
     static Mutex mutexSocket = new Mutex();
 
     static void Main(string[] args)
     {
-        // Permite passar o ID como argumento, ou usa "S101" por defeito
         string sensorId = args.Length > 0 ? args[0] : "S101";
-        // IP do gateway como segundo argumento, ou localhost por defeito
         string gatewayIP = args.Length > 1 ? args[1] : "127.0.0.1";
 
         try
@@ -38,13 +33,10 @@ class Sensor
         Console.WriteLine($"[SENSOR] {sensorId} ligado ao Gateway em {gatewayIP}.");
 
         // --- HELLO ---
-        // O sensor indica os tipos que consegue recolher.
-        // O gateway valida contra o CSV, mas enviamos mesmo assim conforme o protocolo.
         Console.Write($"[SENSOR] Tipos de dados suportados (ex: TEMP,HUM,RUIDO): ");
         string tipos = Console.ReadLine()?.Trim();
         if (string.IsNullOrEmpty(tipos)) tipos = "TEMP";
 
-        // Zona não é necessária aqui (o gateway lê do CSV), mas o protocolo prevê o campo
         Console.Write($"[SENSOR] Zona do sensor: ");
         string zona = Console.ReadLine()?.Trim();
         if (string.IsNullOrEmpty(zona)) zona = "ZONA_DESCONHECIDA";
@@ -82,8 +74,6 @@ class Sensor
         }
 
         // --- Thread de Heartbeat ---
-        // Envia heartbeat a cada 30 segundos enquanto emExecucao for true.
-        // Usa mutex para não colidir com envios de DATA.
         Thread heartbeatThread = new Thread(() =>
         {
             while (emExecucao)
@@ -96,8 +86,6 @@ class Sensor
                 {
                     writer.WriteLine($"HEARTBEAT|{sensorId}");
                     Console.WriteLine("[SENSOR] Heartbeat enviado.");
-
-                    // Lê o ACK do heartbeat
                     string ackHB = reader.ReadLine();
                     if (ackHB == null)
                     {
@@ -120,25 +108,23 @@ class Sensor
                     mutexSocket.ReleaseMutex();
                 }
             }
-            Console.WriteLine("[SENSOR] Thread de heartbeat encerrada.");
         });
         heartbeatThread.IsBackground = true;
         heartbeatThread.Start();
 
         // --- Interface de texto ---
-        Console.WriteLine("\nComandos disponíveis:");
-        Console.WriteLine("  data <tipo> <valor>   (ex: data TEMP 22.5)");
-        Console.WriteLine("  bye");
-        Console.WriteLine("  help");
+        Console.WriteLine("\n=== Comandos disponíveis ===");
+        Console.WriteLine("  data <tipo> <valor>   (ex: data TEMP 22.5)"); 
+        Console.WriteLine("  bye                    (terminar ligação)");
+        Console.WriteLine("  help                   (mostrar ajuda)");
+        Console.WriteLine("==========================\n");
 
         while (emExecucao)
         {
             Console.Write("> ");
             string input = Console.ReadLine();
-
-            if (input == null) break; // EOF (ex: pipe fechado)
+            if (input == null) break;
             input = input.Trim();
-
             if (string.IsNullOrEmpty(input)) continue;
 
             string[] partes = input.Split(' ', 3);
@@ -176,8 +162,7 @@ class Sensor
             }
             else if (partes[0].ToLower() == "bye")
             {
-                emExecucao = false; // Para o heartbeat antes de enviar BYE
-
+                emExecucao = false;
                 mutexSocket.WaitOne();
                 try
                 {
