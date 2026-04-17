@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -31,21 +31,22 @@ class Gateway
         foreach (string linha in File.ReadAllLines(ficheiroCSV))
         {
             if (string.IsNullOrWhiteSpace(linha)) continue;
-            string[] partes = linha.Split(':');
+            string[] partes = linha.Split(':', 5);
             if (partes.Length < 5) continue;
 
             string tiposStr = partes[3].Trim('[', ']');
             List<string> tipos = new List<string>();
             foreach (string t in tiposStr.Split(','))
             {
-                string tt = t.Trim();
+                string[] keyVal = t.Split('=', 2);
+                string tt = keyVal[0].Trim();
                 if (!string.IsNullOrEmpty(tt)) tipos.Add(tt);
             }
 
-            sensores[partes[0]] = new InfoSensor
+            sensores[partes[0].Trim()] = new InfoSensor
             {
-                Estado = partes[1],
-                Zona = partes[2],
+                Estado = partes[1].Trim(),
+                Zona = partes[2].Trim(),
                 Tipos = tipos,
                 LastSync = partes[4]
             };
@@ -65,7 +66,7 @@ class Gateway
             {
                 if (linhas[i].StartsWith(sensorId + ":"))
                 {
-                    string[] partes = linhas[i].Split(':');
+                    string[] partes = linhas[i].Split(':', 5);
                     if (partes.Length >= 5)
                     {
                         partes[4] = agora;
@@ -92,7 +93,7 @@ class Gateway
             {
                 if (linhas[i].StartsWith(sensorId + ":"))
                 {
-                    string[] partes = linhas[i].Split(':');
+                    string[] partes = linhas[i].Split(':', 5);
                     if (partes.Length >= 5)
                     {
                         partes[1] = "desativado";
@@ -181,6 +182,25 @@ class Gateway
                     zona = sensores[sensorId].Zona;
                     Console.WriteLine($"[GATEWAY] Sensor {sensorId} validado. Zona: {zona}");
                     AtualizarLastSync(sensorId);
+                    
+                    // Sincronizar Identidade com Servidor
+                    string syncMsg = $"SYNC_NODE|{sensorId}|{zona}|ativo";
+                    mutexServidor.WaitOne();
+                    try
+                    {
+                        writerServidor.WriteLine(syncMsg);
+                        string resSync = readerServidor.ReadLine();
+                        Console.WriteLine($"[GATEWAY] Sincronização Server DB respondeu: {resSync}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[GATEWAY] Falha de sync com o servidor: {ex.Message}");
+                    }
+                    finally
+                    {
+                        mutexServidor.ReleaseMutex();
+                    }
+
                     writerSensor.WriteLine("ACK");
                 }
                 else if (partes[0] == "DATA" && partes.Length == 5)
@@ -233,6 +253,65 @@ class Gateway
                         mutexServidor.ReleaseMutex();
                     }
 
+                    AtualizarLastSync(sensorId);
+                    writerSensor.WriteLine(respostaServidor ?? "ERROR");
+                }
+                else if (partes[0] == "STREAM_START" && partes.Length == 2)
+                {
+                    if (string.IsNullOrEmpty(sensorId))
+                    {
+                        writerSensor.WriteLine("ERROR");
+                        continue;
+                    }
+                    
+                    Dictionary<string, InfoSensor> sensores;
+                    mutexCSV.WaitOne();
+                    try { sensores = CarregarCSV(); }
+                    finally { mutexCSV.ReleaseMutex(); }
+                    
+                    if (!sensores.ContainsKey(sensorId) || sensores[sensorId].Estado != "ativo" || !sensores[sensorId].Tipos.Contains("VIDEO"))
+                    {
+                        Console.WriteLine($"[GATEWAY] Sensor {sensorId} não tem permissão para vídeo ou está inativo.");
+                        writerSensor.WriteLine("ERROR");
+                        continue;
+                    }
+
+                    Console.WriteLine($"[GATEWAY] Início de Stream validado para {sensorId}.");
+                    AtualizarLastSync(sensorId);
+                    writerSensor.WriteLine("ACK");
+                }
+                else if (partes[0] == "STREAM_FRAME" && partes.Length == 4)
+                {
+                    string frameData = partes[2];
+                    string timestamp = partes[3];
+                    Console.WriteLine($"[GATEWAY - EDGE] A processar frame vídeo localmente ({frameData.Length} bytes)...  Data: {timestamp}");
+                    AtualizarLastSync(sensorId);
+                }
+                else if (partes[0] == "STREAM_STOP" && partes.Length == 2)
+                {
+                    Console.WriteLine($"[GATEWAY] Stream terminada por {sensorId}. A elaborar relatório Edge p/ Servidor...");
+                    
+                    string timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+                    string msgServidor = $"DATA|{sensorId}|{zona}|EVENTO_VIDEO|\"Edge Processamento: 4 Pessoas Detetadas\"|{timestamp}";
+                    
+                    string respostaServidor;
+                    mutexServidor.WaitOne();
+                    try
+                    {
+                        writerServidor.WriteLine(msgServidor);
+                        respostaServidor = readerServidor.ReadLine();
+                        Console.WriteLine($"[GATEWAY] Resultado inferência reportado. Servidor: {respostaServidor}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[GATEWAY] Erro na comunicação c/ Servidor (Edge Report): {ex.Message}");
+                        respostaServidor = "ERROR";
+                    }
+                    finally
+                    {
+                        mutexServidor.ReleaseMutex();
+                    }
+                    
                     AtualizarLastSync(sensorId);
                     writerSensor.WriteLine(respostaServidor ?? "ERROR");
                 }
