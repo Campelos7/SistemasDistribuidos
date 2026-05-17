@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+option csharp_namespace = "Common.Grpc.PreProcessamento";
+
+// Serviço RPC invocado pelo Gateway para uniformizar e validar medições.
+service PreProcessamentoService {
+  rpc ProcessarMedicao (MedicaoRequest) returns (MedicaoResponse);
+}
+
+message MedicaoRequest {
+  string sensor_id = 1;
+  string zona = 2;
+  string tipo_dado = 3;
+  double valor = 4;
+  string timestamp = 5;
+  string formato = 6;   // NONE, JSON, XML, CSV
+  string payload = 7;   // Conteúdo bruto quando o formato não é NONE
+}
+
+message MedicaoResponse {
+  bool sucesso = 1;
+  string sensor_id = 2;
+  string zona = 3;
+  string tipo_dado = 4;
+  double valor = 5;
+  string timestamp = 6;
+  string mensagem_erro = 7;
+}

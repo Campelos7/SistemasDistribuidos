@@ -1,6 +1,33 @@
 [
   {
-    "Name": "Novo Perfil",
+    "Name": "TP2 - Sistema Completo",
+    "Projects": [
+      {
+        "Path": "PreProcessamento\\PreProcessamento.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "ServicoAnalise\\ServicoAnalise.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "TrabalhoPratico\\Servidor.csproj",
+        "Action": "Start"
+      },
+      {
+        "Path": "Gateway\\Gateway.csproj",
+        "Action": "Start",
+        "CommandLineArguments": "ZONA_ESCOLAR"
+      },
+      {
+        "Path": "Sensor\\Sensor.csproj",
+        "Action": "Start",
+        "CommandLineArguments": "S102 ZONA_ESCOLAR PM2.5,TEMP,RUIDO"
+      }
+    ]
+  },
+  {
+    "Name": "TP2 - Servidor + Gateway + Sensor",
     "Projects": [
       {
         "Path": "TrabalhoPratico\\Servidor.csproj",
@@ -8,11 +35,13 @@
       },
       {
         "Path": "Gateway\\Gateway.csproj",
-        "Action": "Start"
+        "Action": "Start",
+        "CommandLineArguments": "ZONA_ESCOLAR"
       },
       {
         "Path": "Sensor\\Sensor.csproj",
-        "Action": "Start"
+        "Action": "Start",
+        "CommandLineArguments": "S102 ZONA_ESCOLAR PM2.5,TEMP,RUIDO"
       }
     ]
   }

@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+option csharp_namespace = "Common.Grpc.Analise";
+
+// Serviço RPC invocado pelo Servidor para análises especializadas.
+service AnaliseService {
+  rpc ExecutarAnalise (AnaliseRequest) returns (AnaliseResponse);
+}
+
+message MedicaoDado {
+  string sensor_id = 1;
+  string zona = 2;
+  string tipo_dado = 3;
+  double valor = 4;
+  string timestamp = 5;
+}
+
+message AnaliseRequest {
+  string tipo_analise = 1;  // ESTATISTICAS, POLUICAO, RISCO
+  string sensor_id = 2;
+  string tipo_dado = 3;
+  string zona = 4;
+  string data_inicio = 5;
+  string data_fim = 6;
+  repeated MedicaoDado medicoes = 7;
+}
+
+message AnaliseResponse {
+  bool sucesso = 1;
+  string tipo_analise = 2;
+  string resultado_json = 3;
+  string mensagem_erro = 4;
+}

@@ -1,3 +1,8 @@
 .vs/
 bin/
 obj/
+*.db
+*.db-journal
+medicoes.db
+scripts/rabbitmq-server.log
+scripts/rabbitmq.pid

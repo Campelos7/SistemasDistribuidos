@@ -1,13 +1,13 @@
-﻿using Common.Config;
+using Common.Config;
 using Common.DataAccess;
 using Common.RpcClient;
 using Common.Services;
-using Servidor.Networking;
+using InterfaceVisualizacao;
 
-// Servidor principal TP2 — TCP (gateways) + SQLite + cliente RPC análise
+// Interface CLI — consulta BD e pede análises via gRPC (não referencia o projeto Servidor)
 var repository = new SqliteMedicaoRepository(AppSettings.DbPath);
 using var analiseClient = new AnaliseGrpcClient();
 var servidorService = new ServidorService(repository, analiseClient);
 
-var listener = new GatewayTcpListener(servidorService, AppSettings.ServidorPorta);
-listener.Iniciar();
+var cli = new CliApp(servidorService, AppSettings.DbPath);
+await cli.ExecutarAsync();

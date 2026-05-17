@@ -1,0 +1,21 @@
+=ERROR REPORT==== 17-May-2026::18:53:32.025000 ===
+beam\beam_load.c(150): Error loading module ssl_app:
+  corrupt atom table
+
+
+{exit,terminating,[{application_controller,call,2,[{file,"application_controller.erl"},{line,511}]},{application,'-ensure_all_started/3-lc$^0/1-0-',1,[{file,"application.erl"},{line,367}]},{application,ensure_all_started,3,[{file,"application.erl"},{line,367}]},{rabbit,'-start_it/1-fun-0-',1,[{file,"rabbit.erl"},{line,411}]},{timer,tc,2,[{file,"timer.erl"},{line,595}]},{rabbit,start_it,1,[{file,"rabbit.erl"},{line,409}]},{init,start_it,1,[{file,"init.erl"},{line,1551}]},{init,start_em,1,[{file,"init.erl"},{line,1526}]}]}
+=INFO REPORT==== 17-May-2026::18:53:32.025000 ===
+    application: ssl
+    exited: {bad_return,
+                {{ssl_app,start,[normal,[]]},
+                 {'EXIT',
+                     {undef,
+                         [{ssl_app,start,[normal,[]],[]},
+                          {application_master,start_it_old,4,
+                              [{file,"application_master.erl"},
+                               {line,295}]}]}}}}
+    type: transient
+
+Kernel pid terminated (application_controller) ("{application_start_failure,ssl,{bad_return,{{ssl_app,start,[normal,[]]},{'EXIT',{undef,[{ssl_app,start,[normal,[]],[]},{application_master,start_it_old,4,[{file,\"application_master.erl\"},{line,295}]}]}}}}}")
+
+Crash dump is being written to: erl_crash.dump...done
