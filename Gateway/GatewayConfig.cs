@@ -17,11 +17,10 @@ public class GatewayConfig
     }
 
     /// <summary>
-    /// Lê zona dos argumentos: Gateway.exe [ZONA_ESCOLAR]
+    /// Cria configuração a partir dos argumentos: Gateway.exe [ZONA_ESCOLAR]
     /// </summary>
-    public static GatewayConfig FromArgs(string[] args)
+    public GatewayConfig(string[] args)
+        : this(args.Length > 0 ? args[0] : "ZONA_ESCOLAR")
     {
-        string zona = args.Length > 0 ? args[0] : "ZONA_ESCOLAR";
-        return new GatewayConfig(zona);
     }
 }

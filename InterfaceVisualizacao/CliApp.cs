@@ -5,6 +5,7 @@ namespace InterfaceVisualizacao;
 
 /// <summary>
 /// Interface de linha de comandos para consultar dados e pedir análises.
+/// Sem métodos static — todas as operações são de instância.
 /// </summary>
 public class CliApp
 {
@@ -50,7 +51,7 @@ public class CliApp
         }
     }
 
-    private static void MostrarMenu()
+    private void MostrarMenu()
     {
         Console.WriteLine("1 - Consultar medições");
         Console.WriteLine("2 - Pedir nova análise (RPC)");
@@ -121,14 +122,14 @@ public class CliApp
         }
     }
 
-    private static string? PedirOpcional(string prompt)
+    private string? PedirOpcional(string prompt)
     {
         Console.Write($"{prompt}: ");
         string? s = Console.ReadLine();
         return string.IsNullOrWhiteSpace(s) ? null : s.Trim();
     }
 
-    private static DateTime? PedirDataOpcional(string prompt)
+    private DateTime? PedirDataOpcional(string prompt)
     {
         Console.Write($"{prompt}: ");
         string? s = Console.ReadLine();

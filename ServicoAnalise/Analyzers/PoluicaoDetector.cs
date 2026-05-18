@@ -51,7 +51,7 @@ public class PoluicaoDetector
         });
     }
 
-    private static string ClassificarNivel(string tipo, double valor)
+    private string ClassificarNivel(string tipo, double valor)
     {
         if (tipo.Equals("PM2.5", StringComparison.OrdinalIgnoreCase))
             return valor > 75 ? "CRITICO" : "ELEVADO";

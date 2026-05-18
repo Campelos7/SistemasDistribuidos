@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using Common.Config;
 using Common.Messaging;
 using Common.Models;
 using RabbitMQ.Client;
@@ -9,18 +8,20 @@ namespace Sensor.Publisher;
 
 /// <summary>
 /// Publica mensagens no RabbitMQ (padrão Pub/Sub do TP2).
+/// Recebe a factory e o nome do exchange via construtor (DIP).
 /// </summary>
 public class RabbitMqPublisher : IDisposable
 {
     private readonly IConnection _connection;
     private readonly IModel _canal;
-    private readonly RabbitMqConnectionFactory _factory = new();
+    private readonly string _exchangeName;
 
-    public RabbitMqPublisher()
+    public RabbitMqPublisher(RabbitMqConnectionFactory factory, string exchangeName)
     {
-        _connection = _factory.ObterLigacao();
+        _exchangeName = exchangeName;
+        _connection = factory.ObterLigacao();
         _canal = _connection.CreateModel();
-        _factory.DeclararExchange(_canal);
+        factory.DeclararExchange(_canal);
     }
 
     /// <summary>
@@ -34,7 +35,7 @@ public class RabbitMqPublisher : IDisposable
         props.DeliveryMode = 2; // persistente
 
         byte[] body = Encoding.UTF8.GetBytes(json);
-        _canal.BasicPublish(AppSettings.ExchangeMonitorizacao, routingKey, props, body);
+        _canal.BasicPublish(_exchangeName, routingKey, props, body);
     }
 
     public void Dispose()

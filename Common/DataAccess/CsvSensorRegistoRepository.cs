@@ -91,7 +91,7 @@ public class CsvSensorRegistoRepository : ISensorRegistoRepository
         }
     }
 
-  private static SensorRegisto? ParseLinha(string linha)
+    private SensorRegisto? ParseLinha(string linha)
     {
         string[] partes = linha.Split(':');
         if (partes.Length < 5) return null;

@@ -1,5 +1,4 @@
 using Common.Interfaces;
-using Gateway;
 using Common.Models;
 using Common.Models.Enums;
 using Common.Serialization;
@@ -11,6 +10,7 @@ namespace Gateway.Services;
 
 /// <summary>
 /// Orquestra subscrição Pub/Sub, validação CSV, RPC de pré-processamento e envio TCP ao servidor.
+/// Todas as dependências são injetadas via construtor (DIP + SRP).
 /// </summary>
 public class GatewayService
 {
@@ -20,6 +20,7 @@ public class GatewayService
     private readonly ServerForwarder _forwarder;
     private readonly RabbitMqSubscriber _subscriber;
     private readonly HeartbeatMonitor _heartbeatMonitor;
+    private readonly FormatParserFactory _parserFactory;
 
     public GatewayService(
         GatewayConfig config,
@@ -27,7 +28,8 @@ public class GatewayService
         IPreProcessador preProcessador,
         ServerForwarder forwarder,
         RabbitMqSubscriber subscriber,
-        HeartbeatMonitor heartbeatMonitor)
+        HeartbeatMonitor heartbeatMonitor,
+        FormatParserFactory parserFactory)
     {
         _config = config;
         _sensorRepository = sensorRepository;
@@ -35,6 +37,7 @@ public class GatewayService
         _forwarder = forwarder;
         _subscriber = subscriber;
         _heartbeatMonitor = heartbeatMonitor;
+        _parserFactory = parserFactory;
     }
 
     /// <summary>
@@ -59,7 +62,7 @@ public class GatewayService
         switch (msg.Tipo.ToLowerInvariant())
         {
             case "registo":
-                await TratarRegistoAsync(msg, sensores);
+                TratarRegisto(msg, sensores);
                 break;
             case "heartbeat":
                 TratarHeartbeat(msg, sensores);
@@ -73,29 +76,28 @@ public class GatewayService
     private bool ZonaCompativel(MensagemPubSub msg) =>
         msg.Zona.Equals(_config.ZonaGerida, StringComparison.OrdinalIgnoreCase);
 
-    private Task TratarRegistoAsync(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
+    private void TratarRegisto(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
     {
         if (!ZonaCompativel(msg))
         {
             Console.WriteLine($"[GATEWAY] Registo ignorado — zona {msg.Zona} não é gerida por este gateway.");
-            return Task.CompletedTask;
+            return;
         }
 
         if (!sensores.TryGetValue(msg.SensorId, out var registo))
         {
             Console.WriteLine($"[GATEWAY] Sensor {msg.SensorId} não registado no CSV.");
-            return Task.CompletedTask;
+            return;
         }
 
         if (!registo.EstaOperacional)
         {
             Console.WriteLine($"[GATEWAY] Sensor {msg.SensorId} em estado {registo.Estado}.");
-            return Task.CompletedTask;
+            return;
         }
 
         _sensorRepository.AtualizarUltimaSincronizacao(msg.SensorId, DateTime.Now);
         Console.WriteLine($"[GATEWAY] Registo aceite: {msg.SensorId}");
-        return Task.CompletedTask;
     }
 
     private void TratarHeartbeat(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
@@ -136,15 +138,17 @@ public class GatewayService
         }
     }
 
-    private static Medicao CriarMedicao(MensagemPubSub msg)
+    /// <summary>
+    /// Constrói uma Medicao a partir da mensagem Pub/Sub, usando o parser adequado ao formato.
+    /// </summary>
+    private Medicao CriarMedicao(MensagemPubSub msg)
     {
-        var formato = FormatParserFactory.ParseFormato(msg.Formato);
+        var formato = _parserFactory.ParseFormato(msg.Formato);
         DateTime ts = DateTime.TryParse(msg.Timestamp, out var parsed) ? parsed : DateTime.Now;
 
         if (formato != FormatoDados.None && !string.IsNullOrWhiteSpace(msg.Payload))
         {
-            var factory = new FormatParserFactory();
-            return factory.Obter(formato).Parse(msg.Payload, msg.SensorId, msg.Zona);
+            return _parserFactory.Obter(formato).Parse(msg.Payload, msg.SensorId, msg.Zona);
         }
 
         return new Medicao(

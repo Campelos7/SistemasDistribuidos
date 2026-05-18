@@ -1,6 +1,5 @@
 using System.Text;
 using System.Text.Json;
-using Common.Config;
 using Common.Messaging;
 using Common.Models;
 using RabbitMQ.Client;
@@ -10,20 +9,24 @@ namespace Gateway.Subscriber;
 
 /// <summary>
 /// Subscreve tópicos RabbitMQ da zona gerida pelo gateway.
+/// Recebe a factory, exchange e routing keys via construtor (DIP).
 /// </summary>
 public class RabbitMqSubscriber : IDisposable
 {
     private readonly IConnection _connection;
     private readonly IModel _canal;
-    private readonly RabbitMqConnectionFactory _factory = new();
+    private readonly string _exchangeName;
+    private readonly RoutingKeys _routingKeys;
 
     public event Func<MensagemPubSub, string, Task>? MensagemRecebida;
 
-    public RabbitMqSubscriber()
+    public RabbitMqSubscriber(RabbitMqConnectionFactory factory, string exchangeName, RoutingKeys routingKeys)
     {
-        _connection = _factory.ObterLigacao();
+        _exchangeName = exchangeName;
+        _routingKeys = routingKeys;
+        _connection = factory.ObterLigacao();
         _canal = _connection.CreateModel();
-        _factory.DeclararExchange(_canal);
+        factory.DeclararExchange(_canal);
     }
 
     /// <summary>
@@ -35,13 +38,13 @@ public class RabbitMqSubscriber : IDisposable
 
         string[] patterns =
         {
-            RoutingKeys.MedicaoZona(zona),
-            RoutingKeys.HeartbeatZona(zona),
-            RoutingKeys.RegistoZona(zona)
+            _routingKeys.MedicaoZona(zona),
+            _routingKeys.HeartbeatZona(zona),
+            _routingKeys.RegistoZona(zona)
         };
 
         foreach (string pattern in patterns)
-            _canal.QueueBind(queueName, AppSettings.ExchangeMonitorizacao, pattern);
+            _canal.QueueBind(queueName, _exchangeName, pattern);
 
         var consumer = new AsyncEventingBasicConsumer(_canal);
         consumer.Received += async (_, ea) =>

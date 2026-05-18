@@ -9,11 +9,18 @@ namespace PreProcessamento.Services;
 /// <summary>
 /// Implementação gRPC do serviço de pré-processamento.
 /// Uniformiza formatos (JSON/XML/CSV) e converte escalas.
+/// Dependências injetadas via construtor (DI do ASP.NET).
 /// </summary>
 public class PreProcessadorGrpcService : PreProcessamentoService.PreProcessamentoServiceBase
 {
-    private readonly EscalaConverter _escalaConverter = new();
-    private readonly FormatParserFactory _parserFactory = new();
+    private readonly EscalaConverter _escalaConverter;
+    private readonly FormatParserFactory _parserFactory;
+
+    public PreProcessadorGrpcService(EscalaConverter escalaConverter, FormatParserFactory parserFactory)
+    {
+        _escalaConverter = escalaConverter;
+        _parserFactory = parserFactory;
+    }
 
     /// <summary>
     /// Processa remotamente uma medição recebida do gateway.
@@ -47,7 +54,7 @@ public class PreProcessadorGrpcService : PreProcessamentoService.PreProcessament
 
     private Medicao ConstruirMedicao(MedicaoRequest request)
     {
-        var formato = FormatParserFactory.ParseFormato(request.Formato);
+        var formato = _parserFactory.ParseFormato(request.Formato);
 
         if (formato != FormatoDados.None && !string.IsNullOrWhiteSpace(request.Payload))
         {

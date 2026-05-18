@@ -5,9 +5,10 @@ using Common.Services;
 using InterfaceVisualizacao;
 
 // Interface CLI — consulta BD e pede análises via gRPC (não referencia o projeto Servidor)
-var repository = new SqliteMedicaoRepository(AppSettings.DbPath);
-using var analiseClient = new AnaliseGrpcClient();
+var settings = new AppSettings();
+var repository = new SqliteMedicaoRepository(settings.DbPath);
+using var analiseClient = new AnaliseGrpcClient(settings.AnaliseUrl);
 var servidorService = new ServidorService(repository, analiseClient);
 
-var cli = new CliApp(servidorService, AppSettings.DbPath);
+var cli = new CliApp(servidorService, settings.DbPath);
 await cli.ExecutarAsync();

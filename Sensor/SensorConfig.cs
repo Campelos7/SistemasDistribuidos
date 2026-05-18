@@ -22,11 +22,12 @@ public class SensorConfig
     /// Cria configuração a partir de argumentos da linha de comandos ou valores por defeito.
     /// Uso: Sensor.exe [sensorId] [zona] [tipos separados por vírgula]
     /// </summary>
-    public static SensorConfig FromArgs(string[] args)
+    public SensorConfig(string[] args)
+        : this(
+            args.Length > 0 ? args[0] : "S102",
+            args.Length > 1 ? args[1] : "ZONA_ESCOLAR",
+            (args.Length > 2 ? args[2] : "PM2.5,TEMP,RUIDO")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries))
     {
-        string id = args.Length > 0 ? args[0] : "S102";
-        string zona = args.Length > 1 ? args[1] : "ZONA_ESCOLAR";
-        string tipos = args.Length > 2 ? args[2] : "PM2.5,TEMP,RUIDO";
-        return new SensorConfig(id, zona, tipos.Split(',', StringSplitOptions.RemoveEmptyEntries));
     }
 }

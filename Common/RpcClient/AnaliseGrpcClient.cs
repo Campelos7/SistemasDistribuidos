@@ -1,4 +1,4 @@
-using Common.Config;
+
 using Common.Grpc.Analise;
 using Common.Interfaces;
 using Common.Models;
@@ -15,9 +15,9 @@ public class AnaliseGrpcClient : IAnalisador, IDisposable
     private readonly GrpcChannel _channel;
     private readonly AnaliseService.AnaliseServiceClient _client;
 
-    public AnaliseGrpcClient(string? url = null)
+    public AnaliseGrpcClient(string url)
     {
-        _channel = GrpcChannel.ForAddress(url ?? AppSettings.AnaliseUrl);
+        _channel = GrpcChannel.ForAddress(url);
         _client = new AnaliseService.AnaliseServiceClient(_channel);
     }
 

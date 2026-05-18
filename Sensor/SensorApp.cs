@@ -11,12 +11,14 @@ public class SensorApp
 {
     private readonly SensorConfig _config;
     private readonly RabbitMqPublisher _publisher;
+    private readonly RoutingKeys _routingKeys;
     private CancellationTokenSource? _heartbeatCts;
 
-    public SensorApp(SensorConfig config, RabbitMqPublisher publisher)
+    public SensorApp(SensorConfig config, RabbitMqPublisher publisher, RoutingKeys routingKeys)
     {
         _config = config;
         _publisher = publisher;
+        _routingKeys = routingKeys;
     }
 
     /// <summary>
@@ -71,7 +73,7 @@ public class SensorApp
             TiposSuportados = _config.TiposSuportados.ToList(),
             Timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss")
         };
-        string key = RoutingKeys.Registo(_config.Zona, _config.SensorId);
+        string key = _routingKeys.Registo(_config.Zona, _config.SensorId);
         _publisher.Publicar(key, msg);
         Console.WriteLine("[SENSOR] Registo publicado no broker.");
     }
@@ -88,7 +90,7 @@ public class SensorApp
             Timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss"),
             Formato = "NONE"
         };
-        string key = RoutingKeys.Medicao(_config.Zona, tipo);
+        string key = _routingKeys.Medicao(_config.Zona, tipo);
         _publisher.Publicar(key, msg);
         Console.WriteLine($"[SENSOR] Medição publicada: {tipo}={valor}");
     }
@@ -104,7 +106,7 @@ public class SensorApp
             Payload = json,
             Timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss")
         };
-        string key = RoutingKeys.Medicao(_config.Zona, "JSON");
+        string key = _routingKeys.Medicao(_config.Zona, "JSON");
         _publisher.Publicar(key, msg);
         Console.WriteLine("[SENSOR] Medição JSON publicada.");
     }
@@ -126,7 +128,7 @@ public class SensorApp
                     Zona = _config.Zona,
                     Timestamp = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss")
                 };
-                _publisher.Publicar(RoutingKeys.Heartbeat(_config.Zona, _config.SensorId), msg);
+                _publisher.Publicar(_routingKeys.Heartbeat(_config.Zona, _config.SensorId), msg);
                 Console.WriteLine("[SENSOR] Heartbeat publicado.");
             }
         }, token);

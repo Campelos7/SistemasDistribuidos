@@ -1,6 +1,5 @@
 using Common.Grpc.Analise;
 using Common.Models;
-using Common.Models.Enums;
 using Grpc.Core;
 using ServicoAnalise.Analyzers;
 
@@ -8,12 +7,23 @@ namespace ServicoAnalise.Services;
 
 /// <summary>
 /// Implementação gRPC do serviço de análise e previsão de riscos.
+/// Analyzers injetados via construtor (DI do ASP.NET).
 /// </summary>
 public class AnaliseGrpcService : AnaliseService.AnaliseServiceBase
 {
-    private readonly EstatisticasAnalyzer _estatisticas = new();
-    private readonly PoluicaoDetector _poluicao = new();
-    private readonly RiscoPredictor _risco = new();
+    private readonly EstatisticasAnalyzer _estatisticas;
+    private readonly PoluicaoDetector _poluicao;
+    private readonly RiscoPredictor _risco;
+
+    public AnaliseGrpcService(
+        EstatisticasAnalyzer estatisticas,
+        PoluicaoDetector poluicao,
+        RiscoPredictor risco)
+    {
+        _estatisticas = estatisticas;
+        _poluicao = poluicao;
+        _risco = risco;
+    }
 
     /// <summary>
     /// Executa remotamente o tipo de análise pedido pelo servidor.

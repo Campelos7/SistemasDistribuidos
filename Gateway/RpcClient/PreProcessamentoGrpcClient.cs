@@ -1,4 +1,3 @@
-using Common.Config;
 using Common.Grpc.PreProcessamento;
 using Common.Interfaces;
 using Common.Models;
@@ -9,15 +8,16 @@ namespace Gateway.RpcClient;
 
 /// <summary>
 /// Cliente gRPC que invoca o serviço remoto de pré-processamento.
+/// Recebe o URL via construtor (DIP).
 /// </summary>
 public class PreProcessamentoGrpcClient : IPreProcessador, IDisposable
 {
     private readonly GrpcChannel _channel;
     private readonly PreProcessamentoService.PreProcessamentoServiceClient _client;
 
-    public PreProcessamentoGrpcClient(string? url = null)
+    public PreProcessamentoGrpcClient(string url)
     {
-        _channel = GrpcChannel.ForAddress(url ?? AppSettings.PreProcessamentoUrl);
+        _channel = GrpcChannel.ForAddress(url);
         _client = new PreProcessamentoService.PreProcessamentoServiceClient(_channel);
     }
 

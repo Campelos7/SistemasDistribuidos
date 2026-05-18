@@ -7,7 +7,7 @@ namespace Common.Models;
 /// </summary>
 public class AnaliseResultado
 {
-    public int Id { get; set; }
+    public int Id { get; init; }
     public TipoAnalise TipoAnalise { get; }
     public string ParametrosJson { get; }
     public string ResultadoJson { get; }

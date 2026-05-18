@@ -1,4 +1,4 @@
-using Common.Grpc.PreProcessamento;
+using Common.Serialization;
 using PreProcessamento.Services;
 
 // Serviço RPC de pré-processamento — porta HTTP/2 para gRPC
@@ -9,6 +9,9 @@ builder.WebHost.ConfigureKestrel(options =>
         Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
 });
 
+// Registar dependências no contentor DI do ASP.NET
+builder.Services.AddSingleton<EscalaConverter>();
+builder.Services.AddSingleton<FormatParserFactory>();
 builder.Services.AddGrpc();
 
 var app = builder.Build();

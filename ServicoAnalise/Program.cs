@@ -1,6 +1,7 @@
-using Common.Grpc.Analise;
+using ServicoAnalise.Analyzers;
 using ServicoAnalise.Services;
 
+// Serviço RPC de análise — porta HTTP/2 para gRPC
 var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.ConfigureKestrel(options =>
 {
@@ -8,6 +9,10 @@ builder.WebHost.ConfigureKestrel(options =>
         Microsoft.AspNetCore.Server.Kestrel.Core.HttpProtocols.Http2);
 });
 
+// Registar analyzers no contentor DI do ASP.NET
+builder.Services.AddSingleton<EstatisticasAnalyzer>();
+builder.Services.AddSingleton<PoluicaoDetector>();
+builder.Services.AddSingleton<RiscoPredictor>();
 builder.Services.AddGrpc();
 
 var app = builder.Build();

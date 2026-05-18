@@ -1,4 +1,4 @@
-using Common.Config;
+
 using Common.Interfaces;
 using Common.Models;
 using Common.Models.Enums;
@@ -14,9 +14,11 @@ public class SqliteMedicaoRepository : IMedicaoRepository
     private readonly string _connectionString;
     private readonly object _lock = new();
 
-    public SqliteMedicaoRepository(string? dbPath = null)
+    public SqliteMedicaoRepository(string dbPath)
     {
-        _connectionString = $"Data Source={dbPath ?? AppSettings.DbPath}";
+        if (string.IsNullOrWhiteSpace(dbPath))
+            throw new ArgumentException("O caminho da base de dados é obrigatório.", nameof(dbPath));
+        _connectionString = $"Data Source={dbPath}";
         InicializarSchema();
     }
 
@@ -181,8 +183,8 @@ public class SqliteMedicaoRepository : IMedicaoRepository
                     tipoEnum,
                     reader.GetString(2),
                     reader.GetString(3),
-                    DateTime.Parse(reader.GetString(4)));
-                resultado.Id = reader.GetInt32(0);
+                    DateTime.Parse(reader.GetString(4)))
+                { Id = reader.GetInt32(0) };
                 lista.Add(resultado);
             }
             return lista;

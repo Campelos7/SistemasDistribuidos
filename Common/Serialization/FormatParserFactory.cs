@@ -5,19 +5,30 @@ namespace Common.Serialization;
 
 /// <summary>
 /// Factory que seleciona o parser adequado consoante o formato indicado (Strategy + Factory).
+/// Recebe os parsers via construtor (DIP).
 /// </summary>
 public class FormatParserFactory
 {
     private readonly Dictionary<FormatoDados, IFormatParser> _parsers;
 
-    public FormatParserFactory()
+    public FormatParserFactory(IEnumerable<IFormatParser> parsers)
     {
-        _parsers = new Dictionary<FormatoDados, IFormatParser>
+        _parsers = new Dictionary<FormatoDados, IFormatParser>();
+        foreach (var parser in parsers)
+            _parsers[parser.FormatoSuportado] = parser;
+    }
+
+    /// <summary>
+    /// Construtor de conveniência que regista os parsers padrão.
+    /// </summary>
+    public FormatParserFactory()
+        : this(new IFormatParser[]
         {
-            [FormatoDados.Json] = new JsonFormatParser(),
-            [FormatoDados.Xml] = new XmlFormatParser(),
-            [FormatoDados.Csv] = new CsvFormatParser()
-        };
+            new JsonFormatParser(),
+            new XmlFormatParser(),
+            new CsvFormatParser()
+        })
+    {
     }
 
     /// <summary>
@@ -33,7 +44,7 @@ public class FormatParserFactory
     /// <summary>
     /// Converte string (JSON, XML, CSV) para enum FormatoDados.
     /// </summary>
-    public static FormatoDados ParseFormato(string? formato)
+    public FormatoDados ParseFormato(string? formato)
     {
         return formato?.ToUpperInvariant() switch
         {
