@@ -127,6 +127,21 @@ public class GatewayService
         try
         {
             var medicao = CriarMedicao(msg);
+
+            // Validar que o sensorId do payload corresponde ao publicador (anti-spoofing)
+            if (!medicao.SensorId.Equals(msg.SensorId, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[GATEWAY] Medição rejeitada — sensorId no payload ({medicao.SensorId}) difere do publicador ({msg.SensorId}).");
+                return;
+            }
+
+            // Validar tipo suportado após parsing (cobre formatos JSON/XML/CSV)
+            if (!registo.SuportaTipo(medicao.TipoDado))
+            {
+                Console.WriteLine($"[GATEWAY] Tipo {medicao.TipoDado} não suportado por {msg.SensorId}.");
+                return;
+            }
+
             var processada = await _preProcessador.ProcessarAsync(medicao);
             bool ok = await _forwarder.EnviarMedicaoAsync(processada);
             if (ok)

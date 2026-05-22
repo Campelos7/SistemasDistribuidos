@@ -37,8 +37,23 @@ public class RiscoPredictor
         var temp = lista.Where(m => m.TipoDado.Equals("TEMP", StringComparison.OrdinalIgnoreCase)).ToList();
         if (temp.Any())
         {
-            double t = temp.Average(v => v.Valor);
-            if (t > 35 || t < 0) score += 20;
+            double tMedia = temp.Average(v => v.Valor);
+            double tMax = temp.Max(v => v.Valor);
+            double tMin = temp.Min(v => v.Valor);
+
+            double contribTemp = 0;
+            if (tMax >= 50)
+                contribTemp = Math.Min(55, 25 + (tMax - 50) * 1.5);
+            else if (tMax > 35 || tMedia > 35)
+            {
+                contribTemp += Math.Min(15, Math.Max(0, tMedia - 35));
+                contribTemp += Math.Min(30, Math.Max(0, (tMax - 35) * 0.85));
+            }
+
+            if (tMedia < 0 || tMin < -5)
+                contribTemp = Math.Max(contribTemp, Math.Min(25, Math.Abs(Math.Min(tMedia, tMin)) * 2));
+
+            score += Math.Min(45, contribTemp);
             fatores++;
         }
 

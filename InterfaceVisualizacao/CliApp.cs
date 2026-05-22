@@ -5,16 +5,18 @@ namespace InterfaceVisualizacao;
 
 /// <summary>
 /// Interface de linha de comandos para consultar dados e pedir análises.
-/// Sem métodos static — todas as operações são de instância.
+/// Consultas à BD são diretas; análises passam pelo Servidor TCP que invoca gRPC.
 /// </summary>
 public class CliApp
 {
     private readonly ServidorService _servidor;
+    private readonly ServidorTcpClient _tcpClient;
     private readonly string _dbPath;
 
-    public CliApp(ServidorService servidor, string dbPath)
+    public CliApp(ServidorService servidor, ServidorTcpClient tcpClient, string dbPath)
     {
         _servidor = servidor;
+        _tcpClient = tcpClient;
         _dbPath = dbPath;
     }
 
@@ -54,7 +56,7 @@ public class CliApp
     private void MostrarMenu()
     {
         Console.WriteLine("1 - Consultar medições");
-        Console.WriteLine("2 - Pedir nova análise (RPC)");
+        Console.WriteLine("2 - Pedir nova análise (via Servidor → gRPC)");
         Console.WriteLine("3 - Ver resultados de análises guardados");
         Console.WriteLine("0 - Sair");
         Console.Write("Escolha: ");
@@ -80,6 +82,10 @@ public class CliApp
         Console.WriteLine($"Total mostrado: {n}\n");
     }
 
+    /// <summary>
+    /// Envia pedido de análise ao Servidor via TCP.
+    /// O Servidor invoca o ServicoAnalise via gRPC e devolve o resultado.
+    /// </summary>
     private async Task PedirAnaliseAsync()
     {
         Console.WriteLine("Tipos: 1=Estatisticas 2=Poluicao 3=Risco");
@@ -99,9 +105,10 @@ public class CliApp
 
         try
         {
-            var resultado = await _servidor.ExecutarAnaliseAsync(tipo, sensor, tipoDado, zona, desde, ate);
+            string resultadoJson = await _tcpClient.PedirAnaliseAsync(
+                tipo.ToString().ToUpperInvariant(), sensor, tipoDado, zona, desde, ate);
             Console.WriteLine("\n--- Resultado da análise ---");
-            Console.WriteLine(resultado.ResultadoJson);
+            Console.WriteLine(resultadoJson);
             Console.WriteLine();
         }
         catch (Exception ex)
@@ -136,3 +143,4 @@ public class CliApp
         return DateTime.TryParse(s, out var dt) ? dt : null;
     }
 }
+

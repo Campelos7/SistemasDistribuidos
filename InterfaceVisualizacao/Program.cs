@@ -1,14 +1,15 @@
 using Common.Config;
 using Common.DataAccess;
-using Common.RpcClient;
 using Common.Services;
 using InterfaceVisualizacao;
 
-// Interface CLI — consulta BD e pede análises via gRPC (não referencia o projeto Servidor)
+// Interface CLI — consulta BD diretamente e pede análises ao Servidor via TCP
+// O Servidor é que invoca o ServicoAnalise via gRPC (conforme enunciado TP2)
 var settings = new AppSettings();
 var repository = new SqliteMedicaoRepository(settings.DbPath);
-using var analiseClient = new AnaliseGrpcClient(settings.AnaliseUrl);
-var servidorService = new ServidorService(repository, analiseClient);
+var servidorService = new ServidorService(repository);
+var tcpClient = new ServidorTcpClient(settings.ServidorHost, settings.ServidorPorta);
 
-var cli = new CliApp(servidorService, settings.DbPath);
+var cli = new CliApp(servidorService, tcpClient, settings.DbPath);
 await cli.ExecutarAsync();
+

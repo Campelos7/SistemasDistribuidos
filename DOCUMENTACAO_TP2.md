@@ -10,8 +10,9 @@ O cenário simula **monitorização ambiental urbana** (temperatura, humidade, P
 |-----------|--------------|------------|
 | **Pub/Sub** | Sensor → Gateway | RabbitMQ (exchange `topic`) |
 | **RPC** | Gateway → Pré-processamento | gRPC (porta **7001**, HTTP/2) |
-| **RPC** | Interface → Análise | gRPC (porta **7002**, HTTP/2) |
+| **RPC** | Servidor → Análise | gRPC (porta **7002**, HTTP/2) |
 | **TCP** | Gateway → Servidor | Sockets (porta **6000**, protocolo TP1) |
+| **TCP** | Interface → Servidor (análises) | Sockets (porta **6000**, protocolo `ANALISE\|…`) |
 | **BD** | Servidor + Interface | SQLite (`medicoes.db` na raiz do repo) |
 | **CLI** | Operador | `InterfaceVisualizacao` e consola do `Sensor` |
 
@@ -28,17 +29,17 @@ O cenário simula **monitorização ambiental urbana** (temperatura, humidade, P
 └─────────────┘                  └──────┬───────┘             └──────────────────┘
                                         │ TCP DATA|...
                                         ▼
-                                 ┌──────────────┐
-                                 │   Servidor   │  SQLite medicoes.db
-                                 │ (porta 6000) │
-                                 └──────┬───────┘
-                                        │ lê/grava mesma BD
-                                        ▼
-                                 ┌──────────────────┐    gRPC     ┌──────────────────┐
-                                 │ Interface CLI    │ ──────────► │ Serviço Análise  │
-                                 │ (consultas +     │   :7002     │                  │
-                                 │  pedidos análise)│             └──────────────────┘
-                                 └──────────────────┘
+                                 ┌──────────────┐    gRPC     ┌──────────────────┐
+                                 │   Servidor   │ ──────────► │ Serviço Análise  │
+                                 │ (porta 6000) │   :7002     │                  │
+                                 └──────┬───────┘             └──────────────────┘
+                                        │ SQLite medicoes.db
+                                        │
+                                 ┌──────┴─────────────┐
+                                 │ Interface CLI      │  TCP ANALISE|...
+                                 │ (consultas BD +    │──────────────────►  Servidor :6000
+                                 │  pedidos análise)  │
+                                 └────────────────────┘
 ```
 
 ### Fluxo de uma medição (passo a passo)
@@ -48,7 +49,7 @@ O cenário simula **monitorização ambiental urbana** (temperatura, humidade, P
 3. O gateway chama **gRPC** `ProcessarMedicao` no pré-processamento (conversão de escalas, parsing JSON/XML/CSV).
 4. O gateway envia a medição normalizada ao **servidor** via TCP: `DATA|sensor|zona|tipo|valor|timestamp`.
 5. O servidor responde `ACK` e grava na tabela `medicoes` do SQLite.
-6. Mais tarde, o operador na **interface** filtra medições na BD e pede uma **análise** via gRPC; o resultado JSON fica na tabela `analises`.
+6. Mais tarde, o operador na **interface** filtra medições na BD e pede uma **análise** ao **servidor** via TCP (`ANALISE|...`); o servidor invoca o **ServicoAnalise** via gRPC e devolve o resultado JSON, que fica na tabela `analises`.
 
 Esta pipeline é a melhor forma de cumprir o enunciado do TP2: cada etapa tem responsabilidade única, pode ser testada e arrancada em separado, e espelha sistemas reais (edge → broker → processamento → armazenamento → analytics).
 
@@ -166,17 +167,18 @@ Formato: `sensor_id:estado:zona:[tipos]:ultima_sincronizacao`
 
 ### 4.4 Servidor (`TrabalhoPratico/` — projeto `Servidor`)
 
-**O que faz:** Aceita ligações TCP dos gateways, persiste medições em SQLite. **Não** expõe CLI — só escuta a porta 6000.
+**O que faz:** Aceita ligações TCP dos gateways e da interface, persiste medições em SQLite e invoca o **ServiçoAnalise via gRPC** quando a interface pede análises. Escuta na porta 6000.
 
-**Protocolo TCP (herdado do TP1):**
+**Protocolo TCP:**
 
 ```
-Pedido:  DATA|sensor_id|zona|tipo_dado|valor|timestamp
-Resposta: ACK
-         ou ERROR
+Medição:  DATA|sensor_id|zona|tipo_dado|valor|timestamp  →  ACK | ERROR
+Análise:  ANALISE|tipo|sensorId|tipoDado|zona|desde|ate  →  ANALISE_OK|json | ANALISE_ERROR|msg
 ```
 
-Exemplo: `DATA|S102|ZONA_ESCOLAR|PM2.5|78|2026-05-20T14:30:00`
+Exemplos:
+- `DATA|S102|ZONA_ESCOLAR|PM2.5|78|2026-05-20T14:30:00`
+- `ANALISE|POLUICAO|S102|PM2.5|ZONA_ESCOLAR|2026-05-19|2026-05-21`
 
 **Base de dados** (`medicoes.db` na raiz do repositório):
 
@@ -188,8 +190,8 @@ Exemplo: `DATA|S102|ZONA_ESCOLAR|PM2.5|78|2026-05-20T14:30:00`
 **Porquê SQLite?**
 - Zero instalação de servidor de BD; ficheiro único partilhado; adequado ao âmbito académico e ao volume do TP.
 
-**Porquê uma thread por gateway?**
-- Mantém o modelo de concorrência do TP1 (`AcceptTcpClient` + thread por cliente); gateways podem enviar em paralelo.
+**Porquê uma thread por cliente?**
+- Mantém o modelo de concorrência do TP1 (`AcceptTcpClient` + thread por cliente); gateways e interface podem ligar em paralelo.
 
 **Arranque:** `dotnet run --project TrabalhoPratico`
 
@@ -197,13 +199,13 @@ Exemplo: `DATA|S102|ZONA_ESCOLAR|PM2.5|78|2026-05-20T14:30:00`
 
 ### 4.5 Serviço de Análise (`ServicoAnalise/`)
 
-**O que faz:** Análises especializadas invocadas pela **Interface** (via `AnaliseGrpcClient` em Common). O servidor TCP não chama este serviço diretamente.
+**O que faz:** Análises especializadas invocadas pelo **Servidor** (via `AnaliseGrpcClient` em Common) quando a interface pede uma análise via TCP.
 
 | Tipo (enum / string) | Classe | O que calcula |
 |----------------------|--------|----------------|
 | `ESTATISTICAS` | `EstatisticasAnalyzer` | Contagem, média, mín, máx, desvio padrão |
 | `POLUICAO` | `PoluicaoDetector` | Alertas PM2.5 > 55, PM10 > 100, ruído > 70 dB |
-| `RISCO` | `RiscoPredictor` | Índice 0–100 e classificação BAIXO/MODERADO/ALTO/CRÍTICO |
+| `RISCO` | `RiscoPredictor` | Índice 0–100 e classificação BAIXO/MODERADO/ALTO/CRÍTICO (TEMP escala com média e pico; PM2.5/ruído mantêm fórmulas anteriores) |
 
 **Porquê RPC separado da interface?**
 - A interface é “fina”: lê BD local e delega cálculo pesado/regras de negócio a um microserviço.
@@ -217,19 +219,19 @@ Exemplo: `DATA|S102|ZONA_ESCOLAR|PM2.5|78|2026-05-20T14:30:00`
 
 ### 4.6 Interface de Visualização (`InterfaceVisualizacao/`)
 
-**O que faz:** Menu CLI para consultar medições, pedir análises (gRPC + gravação em `analises`) e rever histórico.
+**O que faz:** Menu CLI para consultar medições (leitura direta da BD), pedir análises (via TCP ao Servidor, que invoca gRPC) e rever histórico.
 
 **Menu:**
-1. Consultar medições (filtros opcionais; máx. 50 linhas)
-2. Pedir nova análise (RPC)
-3. Ver análises guardadas
+1. Consultar medições (filtros opcionais; máx. 50 linhas) — leitura direta da BD
+2. Pedir nova análise (TCP → Servidor → gRPC Análise)
+3. Ver análises guardadas — leitura direta da BD
 0. Sair
 
 **Porquê projeto separado do Servidor?**
 - O servidor deve ficar sempre à escuta de gateways; misturar menu interativo bloquearia ou complicaria o processo.
-- Ambos usam `ServidorService` + mesmo `DbPath` — consistência sem acoplamento de executáveis.
+- A Interface lê a BD partilhada para consultas, mas delega análises ao Servidor via TCP (que invoca gRPC), conforme o enunciado.
 
-**Arranque:** `dotnet run --project InterfaceVisualizacao` (com RabbitMQ **não** obrigatório; gRPC Análise **sim** para opção 2)
+**Arranque:** `dotnet run --project InterfaceVisualizacao` (requer Servidor TCP a correr para opção 2; ServicoAnalise também)
 
 ---
 

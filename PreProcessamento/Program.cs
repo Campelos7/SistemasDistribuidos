@@ -1,3 +1,4 @@
+using Common.Interfaces;
 using Common.Serialization;
 using PreProcessamento.Services;
 
@@ -11,6 +12,9 @@ builder.WebHost.ConfigureKestrel(options =>
 
 // Registar dependências no contentor DI do ASP.NET
 builder.Services.AddSingleton<EscalaConverter>();
+builder.Services.AddSingleton<IFormatParser, JsonFormatParser>();
+builder.Services.AddSingleton<IFormatParser, XmlFormatParser>();
+builder.Services.AddSingleton<IFormatParser, CsvFormatParser>();
 builder.Services.AddSingleton<FormatParserFactory>();
 builder.Services.AddGrpc();
 

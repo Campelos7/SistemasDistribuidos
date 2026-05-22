@@ -7,7 +7,8 @@ using Common.Services;
 namespace Servidor.Networking;
 
 /// <summary>
-/// Escuta ligações TCP dos gateways e delega o processamento ao serviço do servidor.
+/// Escuta ligações TCP dos gateways e da interface, delegando o processamento ao serviço do servidor.
+/// Suporta comandos DATA (medições) e ANALISE (pedidos de análise RPC).
 /// </summary>
 public class GatewayTcpListener
 {
@@ -21,7 +22,7 @@ public class GatewayTcpListener
     }
 
     /// <summary>
-    /// Aceita gateways em loop, criando uma thread por ligação (concorrência do TP1).
+    /// Aceita clientes em loop, criando uma thread por ligação (concorrência do TP1).
     /// </summary>
     public void Iniciar()
     {
@@ -32,15 +33,15 @@ public class GatewayTcpListener
         while (true)
         {
             TcpClient cliente = listener.AcceptTcpClient();
-            Thread t = new(() => TratarGateway(cliente));
+            Thread t = new(() => TratarCliente(cliente));
             t.IsBackground = true;
             t.Start();
         }
     }
 
-    private void TratarGateway(TcpClient cliente)
+    private void TratarCliente(TcpClient cliente)
     {
-        Console.WriteLine("[SERVIDOR] Gateway conectado.");
+        Console.WriteLine("[SERVIDOR] Cliente conectado.");
         using var stream = cliente.GetStream();
         using var reader = new StreamReader(stream, Encoding.UTF8);
         using var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
@@ -49,10 +50,11 @@ public class GatewayTcpListener
         while ((linha = reader.ReadLine()) != null)
         {
             Console.WriteLine($"[SERVIDOR] Recebido: {linha}");
-            string resposta = _servidorService.ProcessarMensagemTcp(linha);
+            string resposta = _servidorService.ProcessarMensagemTcpAsync(linha).GetAwaiter().GetResult();
             writer.WriteLine(resposta);
         }
 
-        Console.WriteLine("[SERVIDOR] Gateway desconectado.");
+        Console.WriteLine("[SERVIDOR] Cliente desconectado.");
     }
 }
+
