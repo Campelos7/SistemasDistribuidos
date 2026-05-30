@@ -2,10 +2,53 @@
 # Uso: .\start-rabbitmq.ps1
 
 $ErlangHome = "C:\Program Files\Erlang OTP"
-$RabbitSbin = "C:\Program Files\RabbitMQ Server\rabbitmq_server-4.3.0\sbin"
+$RabbitBase = "C:\Program Files\RabbitMQ Server"
 $RabbitEtc  = "$env:APPDATA\RabbitMQ"
 $LogFile    = Join-Path $PSScriptRoot "rabbitmq-server.log"
 $PidFile    = Join-Path $PSScriptRoot "rabbitmq.pid"
+
+function Resolve-RabbitSbin {
+    $fixed = Join-Path $RabbitBase "rabbitmq_server-4.3.0\sbin"
+    if (Test-Path (Join-Path $fixed "rabbitmq-server.bat")) { return $fixed }
+
+    if (Test-Path $RabbitBase) {
+        $latest = Get-ChildItem $RabbitBase -Directory -Filter "rabbitmq_server-*" |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($latest) {
+            $candidate = Join-Path $latest.FullName "sbin"
+            if (Test-Path (Join-Path $candidate "rabbitmq-server.bat")) { return $candidate }
+        }
+    }
+
+    return $fixed
+}
+
+function Show-InstallHelp {
+    Write-Host ""
+    Write-Host "RabbitMQ/Erlang nao estao instalados neste PC." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Instalacao (uma vez, por ordem):" -ForegroundColor Cyan
+    Write-Host "  1. Erlang 27:  https://github.com/erlang/otp/releases/download/OTP-27.3.2/otp_win64_27.3.2.exe"
+    Write-Host "  2. RabbitMQ 4.3: https://github.com/rabbitmq/rabbitmq-server/releases/download/v4.3.0/rabbitmq-server-4.3.0.exe"
+    Write-Host "  3. Depois, nesta pasta (como Administrador): .\setup-rabbitmq.ps1"
+    Write-Host "  4. Por fim: .\start-rabbitmq.ps1"
+    Write-Host ""
+}
+
+$RabbitSbin = Resolve-RabbitSbin
+
+if (-not (Test-Path (Join-Path $ErlangHome "bin\erl.exe"))) {
+    Write-Host "[RabbitMQ] Erlang nao encontrado em: $ErlangHome" -ForegroundColor Red
+    Show-InstallHelp
+    exit 1
+}
+
+if (-not (Test-Path (Join-Path $RabbitSbin "rabbitmq-server.bat"))) {
+    Write-Host "[RabbitMQ] rabbitmq-server.bat nao encontrado em: $RabbitSbin" -ForegroundColor Red
+    Show-InstallHelp
+    exit 1
+}
 
 # Configuracao (copia para AppData se ainda nao existir)
 if (-not (Test-Path $RabbitEtc)) { New-Item -ItemType Directory -Path $RabbitEtc -Force | Out-Null }

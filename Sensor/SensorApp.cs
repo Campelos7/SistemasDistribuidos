@@ -33,6 +33,8 @@ public class SensorApp
         Console.WriteLine("\nComandos:");
         Console.WriteLine("  data <tipo> <valor>              (ex: data PM2.5 78)");
         Console.WriteLine("  datajson <json>                  (publica payload JSON)");
+        Console.WriteLine("  dataxml <tipo> <valor>           (publica payload XML)");
+        Console.WriteLine("  datacsv <tipo> <valor>           (publica payload CSV)");
         Console.WriteLine("  bye");
 
         while (true)
@@ -51,6 +53,12 @@ public class SensorApp
                     break;
                 case "datajson" when partes.Length >= 2:
                     PublicarMedicaoJson(partes[1] + (partes.Length > 2 ? " " + partes[2] : ""));
+                    break;
+                case "dataxml" when partes.Length == 3:
+                    PublicarMedicaoXml(partes[1], double.Parse(partes[2], System.Globalization.CultureInfo.InvariantCulture));
+                    break;
+                case "datacsv" when partes.Length == 3:
+                    PublicarMedicaoCsv(partes[1], double.Parse(partes[2], System.Globalization.CultureInfo.InvariantCulture));
                     break;
                 case "bye":
                     _heartbeatCts?.Cancel();
@@ -109,6 +117,53 @@ public class SensorApp
         string key = _routingKeys.Medicao(_config.Zona, "JSON");
         _publisher.Publicar(key, msg);
         Console.WriteLine("[SENSOR] Medição JSON publicada.");
+    }
+
+    private void PublicarMedicaoXml(string tipo, double valor)
+    {
+        string ts = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+        string v = valor.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string xml =
+            "<medicao>" +
+            $"<sensorId>{_config.SensorId}</sensorId>" +
+            $"<zona>{_config.Zona}</zona>" +
+            $"<tipoDado>{tipo}</tipoDado>" +
+            $"<valor>{v}</valor>" +
+            $"<timestamp>{ts}</timestamp>" +
+            "</medicao>";
+
+        var msg = new MensagemPubSub
+        {
+            Tipo = "medicao",
+            SensorId = _config.SensorId,
+            Zona = _config.Zona,
+            Formato = "XML",
+            Payload = xml,
+            Timestamp = ts
+        };
+        _publisher.Publicar(_routingKeys.Medicao(_config.Zona, "XML"), msg);
+        Console.WriteLine($"[SENSOR] Medição XML publicada: {tipo}={valor}");
+    }
+
+    private void PublicarMedicaoCsv(string tipo, double valor)
+    {
+        string ts = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
+        string v = valor.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string csv =
+            "sensorId,zona,tipoDado,valor,timestamp\n" +
+            $"{_config.SensorId},{_config.Zona},{tipo},{v},{ts}";
+
+        var msg = new MensagemPubSub
+        {
+            Tipo = "medicao",
+            SensorId = _config.SensorId,
+            Zona = _config.Zona,
+            Formato = "CSV",
+            Payload = csv,
+            Timestamp = ts
+        };
+        _publisher.Publicar(_routingKeys.Medicao(_config.Zona, "CSV"), msg);
+        Console.WriteLine($"[SENSOR] Medição CSV publicada: {tipo}={valor}");
     }
 
     private void IniciarHeartbeat()

@@ -44,6 +44,12 @@ public class ServidorService
         if (partes.Length == 7 && partes[0] == "ANALISE")
             return await ProcessarAnaliseAsync(partes);
 
+        if (partes.Length == 6 && partes[0] == "CONSULTA")
+            return ProcessarConsulta(partes);
+
+        if (partes.Length == 3 && partes[0] == "ANALISES")
+            return ProcessarConsultaAnalises(partes);
+
         return "ERROR";
     }
 
@@ -148,5 +154,71 @@ public class ServidorService
     /// </summary>
     public IEnumerable<AnaliseResultado> ConsultarAnalises(TipoAnalise? tipo = null, int limite = 20) =>
         _repository.ObterAnalises(tipo, limite);
+
+    /// <summary>
+    /// Processa pedido TCP CONSULTA|sensor|tipo|zona|desde|ate.
+    /// Devolve as medições serializadas em JSON numa única linha (CONSULTA_OK|json),
+    /// para que a Interface obtenha os dados pela rede em vez de aceder à BD.
+    /// </summary>
+    private string ProcessarConsulta(string[] partes)
+    {
+        try
+        {
+            string? sensorId = Vazio(partes[1]);
+            string? tipoDado = Vazio(partes[2]);
+            string? zona = Vazio(partes[3]);
+            DateTime? desde = DateTime.TryParse(partes[4], out var d1) ? d1 : null;
+            DateTime? ate = DateTime.TryParse(partes[5], out var d2) ? d2 : null;
+
+            var medicoes = _repository.ObterTodas(sensorId, tipoDado, zona, desde, ate)
+                .Take(50)
+                .Select(m => new MedicaoDto(
+                    m.SensorId,
+                    m.Zona,
+                    m.TipoDado,
+                    m.Valor,
+                    m.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss")))
+                .ToList();
+
+            return "CONSULTA_OK|" + JsonSerializer.Serialize(medicoes);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SERVIDOR] Erro na consulta: {ex.Message}");
+            return "CONSULTA_ERROR|" + ex.Message;
+        }
+    }
+
+    /// <summary>
+    /// Processa pedido TCP ANALISES|tipo|limite.
+    /// Devolve os resultados de análises guardados em JSON (ANALISES_OK|json).
+    /// </summary>
+    private string ProcessarConsultaAnalises(string[] partes)
+    {
+        try
+        {
+            TipoAnalise? tipo = string.IsNullOrWhiteSpace(partes[1])
+                ? null
+                : Enum.Parse<TipoAnalise>(partes[1], ignoreCase: true);
+            int limite = int.TryParse(partes[2], out var l) ? l : 20;
+
+            var analises = _repository.ObterAnalises(tipo, limite)
+                .Select(a => new AnaliseDto(
+                    a.TipoAnalise.ToString(),
+                    a.ExecutadaEm.ToString("yyyy-MM-ddTHH:mm:ss"),
+                    a.ParametrosJson,
+                    a.ResultadoJson))
+                .ToList();
+
+            return "ANALISES_OK|" + JsonSerializer.Serialize(analises);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SERVIDOR] Erro na consulta de análises: {ex.Message}");
+            return "ANALISES_ERROR|" + ex.Message;
+        }
+    }
+
+    private static string? Vazio(string s) => string.IsNullOrWhiteSpace(s) ? null : s;
 }
 

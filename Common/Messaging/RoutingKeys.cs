@@ -19,8 +19,8 @@ public class RoutingKeys
     public string Registo(string zona, string sensorId) =>
         $"registo.{Normalizar(zona)}.{Normalizar(sensorId)}";
 
-    /// <summary>Padrão de subscrição do gateway para medições de uma zona.</summary>
-    public string MedicaoZona(string zona) => $"medicao.{Normalizar(zona)}.*";
+    /// <summary>Padrão de subscrição do gateway para medições de uma zona (# cobre tipos com ponto, ex. PM2.5).</summary>
+    public string MedicaoZona(string zona) => $"medicao.{Normalizar(zona)}.#";
 
     /// <summary>Padrão de subscrição do gateway para heartbeats de uma zona.</summary>
     public string HeartbeatZona(string zona) => $"heartbeat.{Normalizar(zona)}.*";

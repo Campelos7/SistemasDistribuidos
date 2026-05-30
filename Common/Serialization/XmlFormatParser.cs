@@ -21,7 +21,11 @@ public class XmlFormatParser : IFormatParser
         string sensorId = root.Element("sensorId")?.Value ?? sensorIdPadrao;
         string zona = root.Element("zona")?.Value ?? zonaPadrao;
         string tipo = root.Element("tipoDado")?.Value ?? "DESCONHECIDO";
-        double valor = double.TryParse(root.Element("valor")?.Value, out var v) ? v : 0;
+        double valor = double.TryParse(
+            root.Element("valor")?.Value,
+            System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var v) ? v : 0;
         DateTime ts = DateTime.TryParse(root.Element("timestamp")?.Value, out var parsed) ? parsed : DateTime.Now;
 
         return new Medicao(sensorId, zona, tipo, valor, ts, FormatoDados.Xml, payload);

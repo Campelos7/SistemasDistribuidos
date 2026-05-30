@@ -42,16 +42,32 @@ public class GatewayTcpListener
     private void TratarCliente(TcpClient cliente)
     {
         Console.WriteLine("[SERVIDOR] Cliente conectado.");
-        using var stream = cliente.GetStream();
-        using var reader = new StreamReader(stream, Encoding.UTF8);
-        using var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
-
-        string? linha;
-        while ((linha = reader.ReadLine()) != null)
+        try
         {
-            Console.WriteLine($"[SERVIDOR] Recebido: {linha}");
-            string resposta = _servidorService.ProcessarMensagemTcpAsync(linha).GetAwaiter().GetResult();
-            writer.WriteLine(resposta);
+            using var stream = cliente.GetStream();
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            using var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true };
+
+            string? linha;
+            while ((linha = reader.ReadLine()) != null)
+            {
+                Console.WriteLine($"[SERVIDOR] Recebido: {linha}");
+                string resposta = _servidorService.ProcessarMensagemTcpAsync(linha).GetAwaiter().GetResult();
+                writer.WriteLine(resposta);
+            }
+        }
+        catch (IOException)
+        {
+            // Ligação terminada abruptamente pelo cliente (gateway/interface):
+            // encerra apenas esta thread, sem derrubar o servidor.
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SERVIDOR] Erro na ligação ao cliente: {ex.Message}");
+        }
+        finally
+        {
+            cliente.Close();
         }
 
         Console.WriteLine("[SERVIDOR] Cliente desconectado.");

@@ -1,23 +1,21 @@
 using Common.Models.Enums;
-using Common.Services;
 
 namespace InterfaceVisualizacao;
 
 /// <summary>
 /// Interface de linha de comandos para consultar dados e pedir análises.
-/// Consultas à BD são diretas; análises passam pelo Servidor TCP que invoca gRPC.
+/// TODAS as operações (consultas e análises) passam pelo Servidor via TCP.
+/// A Interface não acede à base de dados — é um cliente puro de rede.
 /// </summary>
 public class CliApp
 {
-    private readonly ServidorService _servidor;
     private readonly ServidorTcpClient _tcpClient;
-    private readonly string _dbPath;
+    private readonly string _servidorEndpoint;
 
-    public CliApp(ServidorService servidor, ServidorTcpClient tcpClient, string dbPath)
+    public CliApp(ServidorTcpClient tcpClient, string servidorEndpoint)
     {
-        _servidor = servidor;
         _tcpClient = tcpClient;
-        _dbPath = dbPath;
+        _servidorEndpoint = servidorEndpoint;
     }
 
     /// <summary>
@@ -26,7 +24,7 @@ public class CliApp
     public async Task ExecutarAsync()
     {
         Console.WriteLine("=== Interface de Visualização — Monitorização Urbana (TP2) ===");
-        Console.WriteLine($"Base de dados: {_dbPath}\n");
+        Console.WriteLine($"Servidor (TCP): {_servidorEndpoint}\n");
 
         while (true)
         {
@@ -36,13 +34,13 @@ public class CliApp
             switch (opcao?.Trim())
             {
                 case "1":
-                    ConsultarMedicoes();
+                    await ConsultarMedicoesAsync();
                     break;
                 case "2":
                     await PedirAnaliseAsync();
                     break;
                 case "3":
-                    VerAnalises();
+                    await VerAnalisesAsync();
                     break;
                 case "0":
                     return;
@@ -56,13 +54,13 @@ public class CliApp
     private void MostrarMenu()
     {
         Console.WriteLine("1 - Consultar medições");
-        Console.WriteLine("2 - Pedir nova análise (via Servidor → gRPC)");
+        Console.WriteLine("2 - Pedir nova análise (via Servidor -> gRPC)");
         Console.WriteLine("3 - Ver resultados de análises guardados");
         Console.WriteLine("0 - Sair");
         Console.Write("Escolha: ");
     }
 
-    private void ConsultarMedicoes()
+    private async Task ConsultarMedicoesAsync()
     {
         string? sensor = PedirOpcional("ID do sensor (Enter = todos)");
         string? tipo = PedirOpcional("Tipo de dado (Enter = todos)");
@@ -70,16 +68,21 @@ public class CliApp
         DateTime? desde = PedirDataOpcional("Data início (yyyy-MM-dd ou Enter)");
         DateTime? ate = PedirDataOpcional("Data fim (yyyy-MM-dd ou Enter)");
 
-        var medicoes = _servidor.ConsultarMedicoes(sensor, tipo, zona, desde, ate).Take(50);
-
-        Console.WriteLine("\n--- Medições ---");
-        int n = 0;
-        foreach (var m in medicoes)
+        try
         {
-            Console.WriteLine($"{m.Timestamp:yyyy-MM-dd HH:mm} | {m.SensorId} | {m.Zona} | {m.TipoDado} | {m.Valor}");
-            n++;
+            var medicoes = await _tcpClient.ConsultarMedicoesAsync(sensor, tipo, zona, desde, ate);
+
+            Console.WriteLine("\n--- Medições ---");
+            foreach (var m in medicoes)
+            {
+                Console.WriteLine($"{m.Timestamp.Replace('T', ' ')} | {m.SensorId} | {m.Zona} | {m.TipoDado} | {m.Valor}");
+            }
+            Console.WriteLine($"Total mostrado: {medicoes.Count}\n");
         }
-        Console.WriteLine($"Total mostrado: {n}\n");
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Erro: {ex.Message}\n");
+        }
     }
 
     /// <summary>
@@ -117,15 +120,22 @@ public class CliApp
         }
     }
 
-    private void VerAnalises()
+    private async Task VerAnalisesAsync()
     {
-        var analises = _servidor.ConsultarAnalises(limite: 20);
-        Console.WriteLine("\n--- Análises guardadas ---");
-        foreach (var a in analises)
+        try
         {
-            Console.WriteLine($"[{a.ExecutadaEm:yyyy-MM-dd HH:mm}] {a.TipoAnalise}");
-            Console.WriteLine($"  Parâmetros: {a.ParametrosJson}");
-            Console.WriteLine($"  Resultado:  {a.ResultadoJson}\n");
+            var analises = await _tcpClient.ConsultarAnalisesAsync(tipo: null, limite: 20);
+            Console.WriteLine("\n--- Análises guardadas ---");
+            foreach (var a in analises)
+            {
+                Console.WriteLine($"[{a.ExecutadaEm.Replace('T', ' ')}] {a.TipoAnalise}");
+                Console.WriteLine($"  Parâmetros: {a.ParametrosJson}");
+                Console.WriteLine($"  Resultado:  {a.ResultadoJson}\n");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Erro: {ex.Message}\n");
         }
     }
 
