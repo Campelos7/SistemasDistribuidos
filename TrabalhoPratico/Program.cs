@@ -7,8 +7,9 @@ using Servidor.Networking;
 // Servidor principal TP2 — TCP (gateways) + SQLite + cliente RPC análise
 var settings = new AppSettings();
 var repository = new SqliteMedicaoRepository(settings.DbPath);
+using var persistenceWorker = new MedicaoPersistenceWorker(repository);
 using var analiseClient = new AnaliseGrpcClient(settings.AnaliseUrl);
-var servidorService = new ServidorService(repository, analiseClient);
+var servidorService = new ServidorService(repository, analiseClient, persistenceWorker);
 
 var listener = new GatewayTcpListener(servidorService, settings.ServidorPorta);
 listener.Iniciar();

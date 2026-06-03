@@ -53,104 +53,106 @@ public class GatewayService
         Console.ReadLine();
     }
 
-    private async Task ProcessarMensagemAsync(MensagemPubSub msg, string routingKey)
+    /// <summary>
+    /// Processa mensagem Pub/Sub. Devolve <c>true</c> quando a operação terminou (ACK RabbitMQ);
+    /// <c>false</c> quando falhou de forma transitória e a mensagem deve ser reencaminhada (NACK).
+    /// </summary>
+    private async Task<bool> ProcessarMensagemAsync(MensagemPubSub msg, string routingKey)
     {
         Console.WriteLine($"[GATEWAY] Recebido ({routingKey}): {msg.Tipo} de {msg.SensorId}");
 
         var sensores = _sensorRepository.CarregarTodos();
 
-        switch (msg.Tipo.ToLowerInvariant())
+        return msg.Tipo.ToLowerInvariant() switch
         {
-            case "registo":
-                TratarRegisto(msg, sensores);
-                break;
-            case "heartbeat":
-                TratarHeartbeat(msg, sensores);
-                break;
-            case "medicao":
-                await TratarMedicaoAsync(msg, sensores);
-                break;
-        }
+            "registo" => TratarRegisto(msg, sensores),
+            "heartbeat" => TratarHeartbeat(msg, sensores),
+            "medicao" => await TratarMedicaoAsync(msg, sensores),
+            _ => true
+        };
     }
 
     private bool ZonaCompativel(MensagemPubSub msg) =>
         msg.Zona.Equals(_config.ZonaGerida, StringComparison.OrdinalIgnoreCase);
 
-    private void TratarRegisto(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
+    private bool TratarRegisto(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
     {
         if (!ZonaCompativel(msg))
         {
             Console.WriteLine($"[GATEWAY] Registo ignorado — zona {msg.Zona} não é gerida por este gateway.");
-            return;
+            return true;
         }
 
         if (!sensores.TryGetValue(msg.SensorId, out var registo))
         {
             Console.WriteLine($"[GATEWAY] Sensor {msg.SensorId} não registado no CSV.");
-            return;
+            return true;
         }
 
         if (!registo.EstaOperacional)
         {
             Console.WriteLine($"[GATEWAY] Sensor {msg.SensorId} em estado {registo.Estado}.");
-            return;
+            return true;
         }
 
         _sensorRepository.AtualizarUltimaSincronizacao(msg.SensorId, DateTime.Now);
         Console.WriteLine($"[GATEWAY] Registo aceite: {msg.SensorId}");
+        return true;
     }
 
-    private void TratarHeartbeat(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
+    private bool TratarHeartbeat(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
     {
         if (sensores.ContainsKey(msg.SensorId))
             _sensorRepository.AtualizarUltimaSincronizacao(msg.SensorId, DateTime.Now);
+        return true;
     }
 
-    private async Task TratarMedicaoAsync(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
+    /// <summary>
+    /// Pré-processa via gRPC e envia ao Servidor TCP. Só devolve <c>true</c> após <c>ACK</c> do Servidor.
+    /// Excepções de rede/gRPC propagam-se para o consumidor RabbitMQ (NACK + requeue).
+    /// </summary>
+    private async Task<bool> TratarMedicaoAsync(MensagemPubSub msg, IReadOnlyDictionary<string, SensorRegisto> sensores)
     {
         if (!ZonaCompativel(msg))
-            return;
+            return true;
 
         if (!sensores.TryGetValue(msg.SensorId, out var registo) || !registo.EstaOperacional)
         {
             Console.WriteLine($"[GATEWAY] Medição rejeitada — sensor inválido ou inativo.");
-            return;
+            return true;
         }
 
         string tipo = msg.TipoDado ?? "DESCONHECIDO";
         if (!registo.SuportaTipo(tipo) && msg.Formato == "NONE")
         {
             Console.WriteLine($"[GATEWAY] Tipo {tipo} não suportado por {msg.SensorId}.");
-            return;
+            return true;
         }
 
-        try
+        var medicao = CriarMedicao(msg);
+
+        if (!medicao.SensorId.Equals(msg.SensorId, StringComparison.OrdinalIgnoreCase))
         {
-            var medicao = CriarMedicao(msg);
-
-            // Validar que o sensorId do payload corresponde ao publicador (anti-spoofing)
-            if (!medicao.SensorId.Equals(msg.SensorId, StringComparison.OrdinalIgnoreCase))
-            {
-                Console.WriteLine($"[GATEWAY] Medição rejeitada — sensorId no payload ({medicao.SensorId}) difere do publicador ({msg.SensorId}).");
-                return;
-            }
-
-            // Validar tipo suportado após parsing (cobre formatos JSON/XML/CSV)
-            if (!registo.SuportaTipo(medicao.TipoDado))
-            {
-                Console.WriteLine($"[GATEWAY] Tipo {medicao.TipoDado} não suportado por {msg.SensorId}.");
-                return;
-            }
-
-            var processada = await _preProcessador.ProcessarAsync(medicao);
-            bool ok = await _forwarder.EnviarMedicaoAsync(processada);
-            if (ok)
-                _sensorRepository.AtualizarUltimaSincronizacao(msg.SensorId, DateTime.Now);
+            Console.WriteLine($"[GATEWAY] Medição rejeitada — sensorId no payload ({medicao.SensorId}) difere do publicador ({msg.SensorId}).");
+            return true;
         }
-        catch (Exception ex)
+
+        if (!registo.SuportaTipo(medicao.TipoDado))
         {
-            Console.WriteLine($"[GATEWAY] Erro ao processar medição: {ex.Message}");
+            Console.WriteLine($"[GATEWAY] Tipo {medicao.TipoDado} não suportado por {msg.SensorId}.");
+            return true;
         }
+
+        var processada = await _preProcessador.ProcessarAsync(medicao);
+        bool ackServidor = await _forwarder.EnviarMedicaoAsync(processada);
+        if (!ackServidor)
+        {
+            Console.WriteLine("[GATEWAY] Servidor não confirmou ACK — mensagem será reencaminhada.");
+            return false;
+        }
+
+        _sensorRepository.AtualizarUltimaSincronizacao(msg.SensorId, DateTime.Now);
+        return true;
     }
 
     /// <summary>

@@ -48,8 +48,9 @@ O cenário simula **monitorização ambiental urbana** (temperatura, humidade, P
 2. O **gateway** da zona subscreve `medicao.{ZONA}.#` (wildcard `#` cobre tipos com ponto, ex. `PM2.5`), valida o sensor no `sensores.csv` e constrói um objeto `Medicao`.
 3. O gateway chama **gRPC** `ProcessarMedicao` no pré-processamento (conversão de escalas, parsing JSON/XML/CSV).
 4. O gateway envia a medição normalizada ao **servidor** via TCP: `DATA|sensor|zona|tipo|valor|timestamp`.
-5. O servidor responde `ACK` e grava na tabela `medicoes` do SQLite.
-6. O operador na **interface** pede medições e análises ao **servidor** via TCP (`CONSULTA|...`, `ANALISE|...`, `ANALISES|...`); o servidor lê/grava na BD e invoca o **ServicoAnalise** via gRPC quando necessário; a interface recebe JSON pela rede, sem abrir o SQLite.
+5. A thread **dispatcher** TCP do servidor valida a mensagem, enfileira a medição numa `ConcurrentQueue<T>` e responde `ACK` imediatamente — **sem bloquear a rede**. Uma única thread **worker** em background consome a fila e grava na tabela `medicoes` do SQLite (padrão **Dispatcher-Worker**).
+6. Só após receber `ACK` do Servidor, o gateway confirma a mensagem no RabbitMQ (`BasicAck`). Se gRPC, TCP ou rede falharem, a mensagem é **reencaminhada** (`BasicNack`, `requeue: true`) — semântica **At-Least-Once**.
+7. O operador na **interface** pede medições e análises ao **servidor** via TCP (`CONSULTA|...`, `ANALISE|...`, `ANALISES|...`); o servidor lê/grava na BD e invoca o **ServicoAnalise** via gRPC quando necessário; a interface recebe JSON pela rede, sem abrir o SQLite.
 
 Esta pipeline é a melhor forma de cumprir o enunciado do TP2: cada etapa tem responsabilidade única, pode ser testada e arrancada em separado, e espelha sistemas reais (edge → broker → processamento → armazenamento → analytics).
 
@@ -79,7 +80,8 @@ SistemasDistribuidos/
 | **Common** | Evita duplicação; `Medicao`, protos `.proto`, `ServidorService`, repositórios e clientes gRPC são partilhados — **DIP** (Dependency Inversion). |
 | **Um projeto = um processo** | Simula nós distintos num sistema distribuído; falhas e reinícios são isolados. |
 | **Protos em Common** | Cliente e servidor gRPC compilam o mesmo contrato — menos erros de integração. |
-| **`ServidorService` em Common** | Lógica de persistência, consultas TCP e análises RPC; instanciado no processo Servidor. |
+| **`ServidorService` em Common** | Lógica de consultas TCP e análises RPC; enfileira medições via `MedicaoPersistenceWorker`; instanciado no processo Servidor. |
+| **`MedicaoPersistenceWorker` em Common** | Padrão **Dispatcher-Worker**: fila em memória + thread única de I/O para escritas SQLite thread-safe. |
 | **`AppSettings.ResolverDbPath()`** | Procura `TrabalhoPratico.sln` e usa `medicoes.db` na raiz — só o Servidor acede ao ficheiro. |
 
 ---
@@ -150,8 +152,37 @@ SistemasDistribuidos/
 **Como faz:**
 1. Argumento: `Gateway.exe [ZONA]` — predefinição `ZONA_ESCOLAR`.
 2. Cria fila exclusiva e liga aos padrões `medicao.{zona}.#`, `heartbeat.{zona}.*`, `registo.{zona}.*`.
-3. Por mensagem: valida CSV → (medição) RPC → TCP com reconexão automática.
-4. `HeartbeatMonitor` a cada 30 s: sensores **ativos** sem comunicação há **>90 s** passam a **desativado** no CSV.
+3. Consome com **`autoAck: false`** (reconhecimento manual) — ver secção *Tolerância a falhas* abaixo.
+4. Por mensagem: valida CSV → (medição) RPC → TCP com reconexão automática → confirma ou rejeita no RabbitMQ.
+5. `HeartbeatMonitor` a cada 30 s: sensores **ativos** sem comunicação há **>90 s** passam a **desativado** no CSV.
+
+#### Tolerância a falhas e semântica At-Least-Once
+
+O Gateway é o elo entre o broker (durável) e o Servidor TCP. Para sobreviver a **crash do processo** ou **falhas de rede** sem perder medições, o consumo RabbitMQ segue reconhecimento manual:
+
+```
+RabbitMQ ──► Gateway (prefetch 10, paralelo) ──► gRPC ──► TCP ──► Servidor ACK
+                │                                              │
+                └── BasicAck(deliveryTag) ◄── sucesso ─────────┘
+                └── BasicNack(deliveryTag, requeue: true) ◄── falha
+```
+
+| Evento | Acção RabbitMQ | Motivo |
+|--------|----------------|--------|
+| Pré-processamento gRPC OK + Servidor responde `ACK` | `BasicAck` | Pipeline completo; medição aceite pelo Servidor |
+| Servidor responde `ERROR` ou ligação TCP falha | `BasicNack(requeue: true)` | Falha transitória — mensagem volta à fila |
+| Excepção gRPC, `IOException`, crash antes do ack | `BasicNack(requeue: true)` | At-Least-Once — reentrega após recovery |
+| Validação local (sensor inválido, JSON corrupto) | `BasicAck` | Rejeição permanente — evita *poison message* em loop |
+
+**Detalhes de implementação** (`RabbitMqSubscriber.cs`):
+- **`BasicQos(prefetchCount: 10)`** — até 10 mensagens em processamento paralelo; a fila não bloqueia enquanto uma medição aguarda TCP.
+- **`lock` no canal** — `IModel` não é thread-safe; cada `deliveryTag` é confirmado individualmente (`multiple: false`).
+- **`GatewayService.TratarMedicaoAsync`** devolve `true`/`false`; excepções propagam para o handler do consumidor.
+- **`ServerForwarder`** reconecta uma vez; se falhar de novo, lança excepção → NACK + requeue.
+
+**Duplicados possíveis:** se o Servidor enviar `ACK` mas o Gateway crashar **antes** do `BasicAck`, a mensagem é reentregue — comportamento esperado de At-Least-Once (a persistência final no SQLite é serializada pelo Dispatcher-Worker do Servidor).
+
+**Vários gateways:** um processo por zona (`dotnet run --project Gateway -- ZONA_CENTRO`, etc.); todos partilham o mesmo Servidor e broker. Não correr dois gateways na **mesma** zona (duplicaria medições).
 
 **Ficheiro CSV** (`Gateway/sensores.csv`):
 
@@ -225,8 +256,34 @@ Exemplos:
 **Porquê SQLite?**
 - Zero instalação de servidor de BD; ficheiro único; adequado ao âmbito académico e ao volume do TP.
 - Apenas o **Servidor** acede ao ficheiro — a Interface obtém dados via TCP (`CONSULTA` / `ANALISES`), em linha com o princípio de processos isolados.
+
 **Porquê uma thread por cliente?**
 - Mantém o modelo de concorrência do TP1 (`AcceptTcpClient` + thread por cliente); gateways e interface podem ligar em paralelo.
+
+#### Padrão Dispatcher-Worker (escritas SQLite)
+
+O SQLite é uma base de dados local baseada num **único ficheiro**. Quando vários gateways ligam em simultâneo, múltiplas threads do listener TCP tentariam escrever na BD ao mesmo tempo, provocando exceções de concorrência (`database is locked`). Para resolver isto sem sacrificar o throughput da rede, aplicámos o **Padrão Dispatcher-Worker**:
+
+```
+  Gateway A ──TCP──► Thread Dispatcher 1 ──┐
+  Gateway B ──TCP──► Thread Dispatcher 2 ──┼──► ConcurrentQueue<Medicao> ──► Thread Worker ──► SQLite
+  Interface ──TCP──► Thread Dispatcher N ──┘         (memória, thread-safe)      (I/O disco único)
+```
+
+| Papel | Quem | Responsabilidade |
+|-------|------|------------------|
+| **Dispatcher** | Uma thread por ligação TCP (`GatewayTcpListener.TratarCliente`) | Recebe `DATA\|...`, valida, chama `MedicaoPersistenceWorker.Enfileirar()`, responde `ACK` — **nunca toca no disco** |
+| **Fila** | `ConcurrentQueue<Medicao>` em `MedicaoPersistenceWorker` | Buffer em memória altamente rápido e thread-safe entre dispatchers e worker |
+| **Worker** | Uma única thread background (`MedicaoPersistenceWorker`) | Consome a fila e chama `IMedicaoRepository.Guardar()` — **única thread que escreve medições no SQLite** |
+
+**Porquê este padrão?**
+- **Isolamento de contextos:** separa o **contexto de rede** (threads TCP que servem gateways) do **contexto de I/O de disco** (thread worker). A rede nunca bloqueia à espera de locks da BD.
+- **Thread-safety nas escritas:** serializa todas as inserções de medições numa única thread, eliminando condições de corrida e `database is locked` causados por escritas concorrentes.
+- **Desacoplamento produtor/consumidor:** gateways recebem `ACK` logo após enfileirar; a persistência acontece de forma assíncrona em background.
+
+**O que *não* passa pela fila?** Consultas (`CONSULTA`), listagem de análises (`ANALISES`) e pedidos de análise (`ANALISE`) continuam a ser tratados directamente pelo `ServidorService` via repositório — são operações menos frequentes e predominantemente de leitura (ou escritas pontuais na tabela `analises`).
+
+**Ficheiros principais:** `Common/Services/MedicaoPersistenceWorker.cs` (fila + worker), `Common/Services/ServidorService.cs` (`ProcessarData` enfileira), `TrabalhoPratico/Networking/GatewayTcpListener.cs` (threads dispatcher), `TrabalhoPratico/Program.cs` (arranque do worker).
 
 **Arranque:** `dotnet run --project TrabalhoPratico`
 
@@ -291,6 +348,11 @@ Exemplos:
 
 Registo inclui `tiposSuportados`; medições com payload usam `formato`: `JSON`, `XML` ou `CSV`.
 
+**Consumo no Gateway (At-Least-Once):**
+- **`autoAck: false`** — a mensagem só sai da fila após confirmação explícita.
+- **`BasicAck`** — após envio TCP bem-sucedido com resposta `ACK` do Servidor (medições) ou processamento local concluído (registo/heartbeat).
+- **`BasicNack(requeue: true)`** — falha transitória (gRPC indisponível, Servidor down, rede); a mensagem permanece no broker até sucesso ou crash recovery.
+
 ### 5.2 RPC Pré-processamento
 
 - **Serviço:** `PreProcessamentoService.ProcessarMedicao`
@@ -305,7 +367,14 @@ Registo inclui `tiposSuportados`; medições com payload usam `formato`: `JSON`,
 
 ### 5.4 TCP Gateway → Servidor
 
-Linha única por medição; resposta numa linha (`ACK` / `ERROR`). `ServerForwarder` reconecta se a ligação cair.
+Linha única por medição; resposta numa linha (`ACK` / `ERROR`).
+
+| Resposta Servidor | Efeito no Gateway |
+|-------------------|-------------------|
+| `ACK` | Medição enfileirada no Servidor → `BasicAck` no RabbitMQ |
+| `ERROR` ou timeout | `BasicNack(requeue: true)` — mensagem reprocessada |
+
+`ServerForwarder` mantém ligação persistente, serializa envios com `SemaphoreSlim` e reconecta automaticamente se a ligação cair (uma tentativa antes de NACK).
 
 ### 5.5 TCP Interface → Servidor
 
@@ -330,6 +399,8 @@ Campos vazios nos filtros significam “todos”. DTOs: `MedicaoDto`, `AnaliseDt
 | **DIP** | Interfaces `IPreProcessador`, `IAnalisador`, `IMedicaoRepository` | Gateway e Servidor dependem de abstrações; Interface usa só TCP |
 | **DI manual / ASP.NET DI** | `Program.cs` de cada projeto | Dependências explícitas no construtor |
 | **SRP** | Uma classe por papel (publisher, subscriber, forwarder, analyzer) | Alterações localizadas |
+| **Dispatcher-Worker** | `MedicaoPersistenceWorker` + threads TCP do `GatewayTcpListener` | Dispatchers enfileiram medições; worker único escreve no SQLite — thread-safety e rede não bloqueante |
+| **At-Least-Once** | `RabbitMqSubscriber` + `GatewayService` | Reconhecimento manual RabbitMQ: ACK só após confirmação TCP; NACK + requeue em falhas |
 
 ---
 
@@ -349,6 +420,232 @@ Campos vazios nos filtros significam “todos”. DTOs: `MedicaoDto`, `AnaliseDt
 ---
 
 ## 8. Como executar
+
+> **Nunca correste isto?** Lê primeiro a secção **[8.0 Guia para iniciantes](#80-guia-para-iniciantes)** — explica passo a passo no Visual Studio **ou** no PowerShell, sem assumir que já sabes usar o projeto.
+
+### 8.0 Guia para iniciantes
+
+Este projeto **não é uma aplicação única**. São **vários programas** que têm de estar ligados ao mesmo tempo, como peças de um puzzle:
+
+| Programa | Para quê serve | Obrigatório? |
+|----------|----------------|--------------|
+| **RabbitMQ** | Fila de mensagens entre Sensor e Gateway | ✅ Sim |
+| **PreProcessamento** | Normaliza medições (gRPC, porta 7001) | ✅ Sim |
+| **ServicoAnalise** | Análises avançadas (gRPC, porta 7002) | ✅ Sim (para menu de análises na Interface) |
+| **Servidor** | Guarda medições na BD (TCP, porta 6000) | ✅ Sim |
+| **Gateway** | Ponte RabbitMQ → Servidor | ✅ Sim |
+| **Sensor** | Simula um sensor ambiental | ✅ Sim (para gerar dados) |
+| **InterfaceVisualizacao** | Menu para consultar dados | Opcional (útil para ver resultados) |
+
+**Regra de ouro:** liga sempre **de cima para baixo** — RabbitMQ primeiro, depois serviços, depois Gateway/Sensor por último.
+
+---
+
+#### Passo 0 — Instalar (só uma vez)
+
+1. Instala o **[.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)** (escolhe «SDK», não só Runtime).
+2. Instala o **Visual Studio 2022** com carga de trabalho «Desenvolvimento ASP.NET e Web» *(opcional mas recomendado)*.
+3. Instala o **RabbitMQ** no Windows — na pasta `scripts` do projeto, abre PowerShell **como Administrador** e corre:
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos\scripts
+Set-ExecutionPolicy Bypass -Scope Process -Force
+.\setup-rabbitmq.ps1
+```
+
+> Só precisas disto **uma vez**. Se der erro de Erlang, vê a nota na secção [RabbitMQ no Windows](#rabbitmq-no-windows-sem-docker) mais abaixo.
+
+4. *(Opcional)* Python 3 — só se quiseres usar o sensor em `SensorPython/`.
+
+---
+
+#### Opção A — Visual Studio (mais fácil)
+
+**1. Abrir a solução**
+
+- Abre o Visual Studio.
+- **Ficheiro → Abrir → Projeto/Solução**.
+- Navega até `C:\Users\shovi\source\repos\SistemasDistribuidos\TrabalhoPratico.sln` e abre.
+
+**2. Ligar o RabbitMQ** *(obrigatório antes de carregar em Executar)*
+
+- Abre **PowerShell** (não precisa ser administrador para arrancar):
+- Cola e executa:
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos\scripts
+.\start-rabbitmq.ps1
+```
+
+- Deixa esta janela aberta ou minimizada. Se quiseres confirmar: abre no browser http://localhost:15672 (utilizador `guest`, password `guest`).
+
+**3. Escolher o perfil de arranque múltiplo**
+
+- Na barra de ferramentas do Visual Studio, ao lado do botão verde **▶ Executar**, há um dropdown.
+- Escolhe **`TP2 - Sistema Completo`**.
+  - Se não aparecer: clica com o botão direito na **Solução** no Explorador de Soluções → **Propriedades** → **Projeto de arranque múltiplo** → selecciona o perfil ou configura manualmente os 5 projetos abaixo com «Iniciar».
+
+**4. Carregar em ▶ Executar (F5)**
+
+O Visual Studio abre **5 janelas de consola** ao mesmo tempo:
+
+| Janela | O que vês quando está OK |
+|--------|--------------------------|
+| PreProcessamento | `Now listening on: http://localhost:7001` |
+| ServicoAnalise | `Now listening on: http://localhost:7002` |
+| Servidor | `[SERVIDOR] A escutar gateways na porta 6000...` |
+| Gateway | `[GATEWAY] Subscrito à zona ZONA_ESCOLAR...` |
+| Sensor | prompt `>` à espera de comandos |
+
+**5. Enviar uma medição de teste**
+
+- Vai à janela do **Sensor** (a que mostra `>`).
+- Escreve e prime Enter:
+
+```text
+data PM2.5 78
+```
+
+- Deves ver actividade nas janelas Gateway e Servidor (`ACK`, `Medição enfileirada`, `Medição guardada`).
+
+**6. Abrir a Interface** *(opcional)*
+
+- No Explorador de Soluções: botão direito em **InterfaceVisualizacao** → **Definir como projeto de arranque**.
+- Botão direito outra vez → **Iniciar nova instância** *(ou arranca só a Interface num 6.º terminal)*.
+- Usa o menu numérico para consultar medições.
+
+**7. Parar tudo**
+
+- Fecha as janelas de consola **ou** carrega no quadrado vermelho **Parar** no Visual Studio.
+- Para o RabbitMQ (opcional):
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos\scripts
+.\stop-rabbitmq.ps1
+```
+
+---
+
+#### Opção B — PowerShell (terminal a terminal)
+
+Precisas de **várias janelas PowerShell** — uma por programa. Não feches uma janela enquanto estiveres a testar; fechar = desligar esse componente.
+
+**1. Abrir a pasta do projeto**
+
+Em cada terminal novo, começa por ir à raiz do repo:
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos
+```
+
+**2. Terminal 1 — RabbitMQ**
+
+```powershell
+cd scripts
+.\start-rabbitmq.ps1
+```
+
+Deixa este terminal aberto.
+
+**3. Terminal 2 — Pré-processamento**
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos
+dotnet run --project PreProcessamento
+```
+
+Espera ver `Now listening on: http://localhost:7001`. Não feches.
+
+**4. Terminal 3 — Serviço de análise**
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos
+dotnet run --project ServicoAnalise
+```
+
+Espera ver `Now listening on: http://localhost:7002`. Não feches.
+
+**5. Terminal 4 — Servidor**
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos
+dotnet run --project TrabalhoPratico
+```
+
+Espera ver `[SERVIDOR] A escutar gateways na porta 6000...`. Não feches.
+
+**6. Terminal 5 — Gateway**
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos\Gateway
+dotnet run -- ZONA_ESCOLAR
+```
+
+> Corre dentro da pasta `Gateway` para o ficheiro `sensores.csv` ser encontrado.
+
+Espera ver `[GATEWAY] Ativo para zona ZONA_ESCOLAR`. Não feches.
+
+**7. Terminal 6 — Sensor**
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos
+dotnet run --project Sensor -- S102 ZONA_ESCOLAR PM2.5,TEMP,RUIDO
+```
+
+Aparece o prompt `>`. Envia uma medição:
+
+```text
+data PM2.5 78
+```
+
+**8. Terminal 7 — Interface** *(opcional)*
+
+```powershell
+cd C:\Users\shovi\source\repos\SistemasDistribuidos
+dotnet run --project InterfaceVisualizacao
+```
+
+**Ordem resumida (PowerShell):**
+
+```
+RabbitMQ → PreProcessamento → ServicoAnalise → Servidor → Gateway → Sensor → (Interface)
+```
+
+**Parar:** `Ctrl+C` em cada terminal, de baixo para cima (Sensor primeiro, RabbitMQ por último).
+
+---
+
+#### Comandos úteis no Sensor
+
+| Comando | Exemplo |
+|---------|---------|
+| Medição simples | `data PM2.5 78` |
+| Medição temperatura | `data TEMP 22` |
+| Medição humidade | `data HUM 65` |
+| Sair | `bye` |
+
+A zona do sensor (`ZONA_ESCOLAR`) **tem de coincidir** com a zona do Gateway. O perfil predefinido usa ambos `ZONA_ESCOLAR` e sensor `S102`.
+
+---
+
+#### «Não funciona» — verifica isto primeiro
+
+| Sintoma | O que fazer |
+|---------|-------------|
+| Erro na porta **5672** | RabbitMQ não está ligado → corre `.\scripts\start-rabbitmq.ps1` |
+| Gateway diz «sensor inválido» | Sensor `S102` tem de estar `ativo` em `Gateway/sensores.csv` |
+| Erro **gRPC / Unavailable** | Falta PreProcessamento ou ServicoAnalise — liga os terminais 2 e 3 |
+| Interface não liga | Servidor (porta 6000) tem de estar a correr |
+| Gateway não recebe nada | Sensor e Gateway têm de usar a **mesma zona** |
+| Corri `dotnet run` e fechou logo | Normal se deu erro — lê a mensagem vermelha; muitas vezes falta RabbitMQ ou ordem errada |
+
+---
+
+#### Teste de Fogo (At-Least-Once)
+
+Quando o sistema básico já funcionar, segue o **[Teste de Fogo 1 — Cabo Arrancado](#teste-de-fogo-1--o-teste-do-cabo-arrancado-prova-do-at-least-once)** na secção 14.
+
+---
 
 ### Pré-requisitos
 
@@ -616,6 +913,7 @@ Se não houver medições no intervalo:
 - **Três analisadores** (estatísticas, poluição, risco One Health)
 - Interface **100% via TCP** (`CONSULTA`, `ANALISES`, `ANALISE`); Servidor único dono da BD
 - **Reconexão TCP** no gateway; listener do servidor tolerante a desconexões de clientes
+- **At-Least-Once** no Gateway: `autoAck: false`, `BasicAck`/`BasicNack`, prefetch concorrente
 - **Heartbeat** com desativação automática no CSV; routing `medicao.{zona}.#` para tipos como `PM2.5`
 - Scripts PowerShell para RabbitMQ no Windows (detecção de instalação)
 - Perfil Visual Studio **multi-startup**
@@ -634,19 +932,177 @@ Se não houver medições no intervalo:
 | Sensor Python rejeitado | S201 fora do CSV em runtime | Rebuild Gateway ou editar `bin/Debug/net8.0/sensores.csv` |
 | TEMP “estranha” na BD | Conversão °F→°C | Valores > 50 em `TEMP` são tratados como Fahrenheit |
 | Serviço Windows RabbitMQ falha | Hostname com acentos | Usar scripts com `rabbit@localhost` |
+| Mensagem reencaminhada repetidamente | Servidor ou Pré-proc parados | Arrancar Servidor (:6000) e PreProcessamento (:7001); ver logs `[GATEWAY] Falha no processamento` |
+| Medições duplicadas na BD | At-Least-Once após crash entre TCP ACK e BasicAck | Comportamento esperado; persistência serializada no Servidor |
 
 ---
 
 ## 13. Onde começar a ler o código
 
 1. `Common/Models/Medicao.cs` — entidade e formato TCP
-2. `Gateway/Services/GatewayService.cs` — fluxo principal do gateway
-3. `Common/Services/ServidorService.cs` — TCP + análises + consultas
-4. `TrabalhoPratico/Networking/GatewayTcpListener.cs` — aceita gateways
-5. `Common/Protos/*.proto` — contratos gRPC
+2. `Gateway/Subscriber/RabbitMqSubscriber.cs` — consumo RabbitMQ (manual ack, At-Least-Once)
+3. `Gateway/Services/GatewayService.cs` — fluxo principal do gateway (validação → gRPC → TCP)
+4. `Common/Services/MedicaoPersistenceWorker.cs` — padrão Dispatcher-Worker (fila + thread de I/O SQLite)
+5. `Common/Services/ServidorService.cs` — TCP + enfileiramento de medições + análises + consultas
+6. `TrabalhoPratico/Networking/GatewayTcpListener.cs` — threads dispatcher (aceita gateways)
+7. `Common/Protos/*.proto` — contratos gRPC
 
 Todo o código C# público inclui comentários `/// <summary>`; nomes de domínio em português (`Medicao`, `Zona`, `SensorRegisto`).
 
 ---
 
-*Documentação alinhada com o estado atual do repositório (Interface via TCP, sensor Python, CONSULTA/ANALISES) — Sistemas Distribuídos UTAD 2025/2026.*
+## 14. Testes de fogo (validação manual)
+
+Guiões para demonstrar tolerância a falhas e semânticas de entrega na avaliação.
+
+### Pré-requisitos comuns
+
+- Repositório clonado; .NET 8 SDK instalado.
+- RabbitMQ a correr (`.\scripts\start-rabbitmq.ps1`).
+- **Pré-Processamento** a correr (o Gateway invoca gRPC **antes** do TCP):
+
+```powershell
+dotnet run --project PreProcessamento
+```
+
+- Zona de teste: **`ZONA_CENTRO`** — sensor **`S101`** no `Gateway/sensores.csv` (estado `ativo`).
+- Correr Gateway e Sensor a partir das pastas dos projetos (garante que `sensores.csv` é encontrado):
+
+```powershell
+cd Gateway          # ou cd Sensor
+dotnet run -- ZONA_CENTRO
+```
+
+> **Não arranques** o Servidor (`TrabalhoPratico`) até o passo de recuperação indicado em cada teste.
+
+---
+
+### Teste de Fogo 1 — O Teste do «Cabo Arrancado» (prova do At-Least-Once)
+
+**Objectivo:** provar que o reconhecimento manual RabbitMQ (`autoAck: false`, `BasicNack` + `requeue: true`) mascara falhas de crash e garante semântica **At-Least-Once** — zero perda de medições publicadas enquanto o broker está up.
+
+#### Cenário
+
+| Processo | Estado durante fase 1 | Estado durante recuperação |
+|----------|----------------------|----------------------------|
+| RabbitMQ | ✅ Ligado | ✅ Ligado |
+| Pré-Processamento | ✅ Ligado | ✅ Ligado |
+| Sensor (S101) | ✅ A publicar | ✅ A publicar |
+| Gateway | ✅ Ligado | ❌ Ctrl+C → depois ✅ reiniciado |
+| Servidor (:6000) | ❌ **Desligado** | ✅ Ligado |
+
+#### Passo a passo
+
+**Terminal 1 — RabbitMQ** (se ainda não estiver up):
+
+```powershell
+cd scripts
+.\start-rabbitmq.ps1
+cd ..
+```
+
+**Terminal 2 — Pré-Processamento:**
+
+```powershell
+dotnet run --project PreProcessamento
+```
+
+**Terminal 3 — Sensor** (publica medições para `ZONA_CENTRO`):
+
+```powershell
+dotnet run --project Sensor -- S101 ZONA_CENTRO TEMP,HUM,RUIDO
+```
+
+No prompt `>` do sensor, envia **3 medições** (ficam na fila RabbitMQ se o Gateway falhar):
+
+```text
+> data TEMP 22
+> data HUM 55
+> data RUIDO 48
+```
+
+*(Alternativa Python: `python sensor.py S101 ZONA_CENTRO TEMP,HUM,RUIDO` — requer `S101` activo no CSV.)*
+
+**Terminal 4 — Gateway (SEM Servidor):**
+
+```powershell
+cd Gateway
+dotnet run -- ZONA_CENTRO
+```
+
+#### O que deves observar (fase de falha)
+
+1. O Gateway consome mensagens do RabbitMQ (`[GATEWAY] Recebido (medicao.ZONA_CENTRO....)`).
+2. O gRPC de pré-processamento corre (Pré-Processamento activo).
+3. O envio TCP para `:6000` **falha** (Servidor desligado).
+4. No terminal do Gateway aparecem linhas como:
+   - `[GATEWAY] Conexão perdida com o servidor. A reconectar...`
+   - `[GATEWAY] Falha no processamento — mensagem reencaminhada: ...`
+   - `[GATEWAY] Servidor não confirmou ACK — mensagem será reencaminhada.`
+5. O processo **não termina** — o `try-catch` em `RabbitMqSubscriber` emite **`BasicNack(requeue: true)`** e a mensagem **permanece no broker**.
+6. As medições são **reentregues** ciclicamente enquanto o Servidor estiver down (comportamento esperado).
+
+#### Momento da verdade — simulação de crash
+
+1. Com o Gateway a mostrar erros TCP, prime **`Ctrl+C`** no Terminal 4 para o matar à força (simula crash do processo).
+2. As mensagens ficam **unacked** ou **requeued** no RabbitMQ — não foram confirmadas com `BasicAck`.
+
+#### Recuperação
+
+**Terminal 5 — Servidor Principal:**
+
+```powershell
+dotnet run --project TrabalhoPratico
+```
+
+Aguarda: `[SERVIDOR] A escutar gateways na porta 6000...`
+
+**Terminal 4 — Gateway (reiniciar):**
+
+```powershell
+cd Gateway
+dotnet run -- ZONA_CENTRO
+```
+
+#### Resultado esperado (sucesso a 100%)
+
+1. O Gateway arranca e **puxa de novo** as medições pendentes (`TEMP 22`, `HUM 55`, `RUIDO 48`).
+2. Para cada uma: gRPC OK → TCP `DATA|...` → Servidor responde **`ACK`**.
+3. Só então: **`BasicAck`** no RabbitMQ — mensagem removida da fila.
+4. No Servidor:
+   - `[SERVIDOR] Medição enfileirada: S101 | ...`
+   - `[WORKER] Medição guardada: S101 | ...`
+5. No Gateway: `[GATEWAY] Servidor respondeu: ACK` — **sem** linhas de reencaminhamento.
+
+#### Verificação final (opcional)
+
+**Interface** (com Servidor a correr):
+
+```powershell
+dotnet run --project InterfaceVisualizacao
+```
+
+Opção de consulta de medições com filtro `S101` / `ZONA_CENTRO` — devem aparecer as três medições enviadas antes do crash.
+
+Ou inspecionar `medicoes.db` (raiz do repo) após o worker persistir.
+
+#### Checklist para a avaliação
+
+| # | Critério | ✓ |
+|---|----------|---|
+| 1 | Gateway arranca **sem** Servidor (ligação TCP lazy) | |
+| 2 | Falha TCP → log de reencaminhamento, **sem crash** | |
+| 3 | `Ctrl+C` no Gateway → processo morre, mensagens no broker | |
+| 4 | Servidor + Gateway reiniciados → mesmas medições processadas | |
+| 5 | `ACK` TCP + `[WORKER] Medição guardada` no Servidor | |
+| 6 | Zero perda face às 3 medições publicadas | |
+
+#### Notas
+
+- **ServicoAnalise** não é necessário neste teste (só medições `DATA`).
+- Se o Gateway rejeitar `S101`, confirma `sensores.csv` na pasta de execução (`Gateway/` ou `bin/Debug/net8.0/`).
+- Reencaminhamentos repetidos com Servidor down são **normais** — prova que o NACK + requeue funciona.
+
+---
+
+*Documentação alinhada com o estado atual do repositório (Interface via TCP, Dispatcher-Worker, At-Least-Once no Gateway, sensor Python, CONSULTA/ANALISES) — Sistemas Distribuídos UTAD 2025/2026.*

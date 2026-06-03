@@ -2,8 +2,7 @@
   "profiles": {
     "PreProcessamento": {
       "commandName": "Project",
-      "launchBrowser": false,
-      "applicationUrl": "http://localhost:7001"
+      "launchBrowser": false
     }
   }
 }

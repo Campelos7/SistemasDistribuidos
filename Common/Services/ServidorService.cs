@@ -13,14 +13,19 @@ public class ServidorService
 {
     private readonly IMedicaoRepository _repository;
     private readonly IAnalisador? _analisador;
+    private readonly MedicaoPersistenceWorker? _persistenceWorker;
 
     /// <summary>
     /// Construtor completo — usado pelo Servidor TCP que invoca análises via gRPC.
     /// </summary>
-    public ServidorService(IMedicaoRepository repository, IAnalisador analisador)
+    public ServidorService(
+        IMedicaoRepository repository,
+        IAnalisador analisador,
+        MedicaoPersistenceWorker persistenceWorker)
     {
         _repository = repository;
         _analisador = analisador;
+        _persistenceWorker = persistenceWorker;
     }
 
     /// <summary>
@@ -69,11 +74,14 @@ public class ServidorService
     {
         try
         {
+            if (_persistenceWorker == null)
+                return "ERROR";
+
             DateTime ts = DateTime.Parse(partes[5]);
             double valor = double.Parse(partes[4], System.Globalization.CultureInfo.InvariantCulture);
             var medicao = new Medicao(partes[1], partes[2], partes[3], valor, ts);
-            _repository.Guardar(medicao);
-            Console.WriteLine($"[SERVIDOR] Medição guardada: {medicao.SensorId} | {medicao.TipoDado} | {medicao.Valor}");
+            _persistenceWorker.Enfileirar(medicao);
+            Console.WriteLine($"[SERVIDOR] Medição enfileirada: {medicao.SensorId} | {medicao.TipoDado} | {medicao.Valor}");
             return "ACK";
         }
         catch (Exception ex)

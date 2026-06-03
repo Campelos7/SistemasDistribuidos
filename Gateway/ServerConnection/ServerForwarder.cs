@@ -22,14 +22,15 @@ public class ServerForwarder : IDisposable
     {
         _host = host;
         _porta = porta;
-        Ligar();
     }
 
     /// <summary>
-    /// Estabelece ligação TCP ao servidor.
+    /// Estabelece ligação TCP ao servidor (lazy — só quando necessário enviar).
     /// </summary>
     private void Ligar()
     {
+        _writer?.Dispose();
+        _reader?.Dispose();
         _cliente?.Close();
         _cliente = new TcpClient(_host, _porta);
         var stream = _cliente.GetStream();
@@ -38,9 +39,18 @@ public class ServerForwarder : IDisposable
         Console.WriteLine($"[GATEWAY] Ligado ao servidor {_host}:{_porta}");
     }
 
+    private void EnsureLigado()
+    {
+        if (_cliente is { Connected: true })
+            return;
+        Ligar();
+    }
+
     /// <summary>
     /// Envia uma medição ao servidor e aguarda ACK. Reconecta automaticamente se necessário.
     /// </summary>
+    /// <returns><c>true</c> se o Servidor respondeu <c>ACK</c> (medição enfileirada/persistida).</returns>
+    /// <exception cref="IOException">Quando a ligação TCP falha e a reconexão também falha.</exception>
     public async Task<bool> EnviarMedicaoAsync(Medicao medicao, CancellationToken cancellationToken = default)
     {
         await _mutex.WaitAsync(cancellationToken);
@@ -48,25 +58,35 @@ public class ServerForwarder : IDisposable
         {
             try
             {
-                await _writer!.WriteLineAsync(medicao.ParaMensagemTcp().AsMemory(), cancellationToken);
-                string? resposta = await _reader!.ReadLineAsync(cancellationToken);
-                Console.WriteLine($"[GATEWAY] Servidor respondeu: {resposta}");
-                return resposta == "ACK";
+                EnsureLigado();
+                return await EnviarEReceberAckAsync(medicao, cancellationToken);
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or SocketException)
             {
                 Console.WriteLine("[GATEWAY] Conexão perdida com o servidor. A reconectar...");
-                Ligar();
-                await _writer!.WriteLineAsync(medicao.ParaMensagemTcp().AsMemory(), cancellationToken);
-                string? resposta = await _reader!.ReadLineAsync(cancellationToken);
-                Console.WriteLine($"[GATEWAY] Servidor respondeu (após reconexão): {resposta}");
-                return resposta == "ACK";
+                try
+                {
+                    Ligar();
+                    return await EnviarEReceberAckAsync(medicao, cancellationToken);
+                }
+                catch (Exception retryEx) when (retryEx is IOException or SocketException)
+                {
+                    throw new IOException("Falha ao enviar medição ao Servidor após reconexão.", ex);
+                }
             }
         }
         finally
         {
             _mutex.Release();
         }
+    }
+
+    private async Task<bool> EnviarEReceberAckAsync(Medicao medicao, CancellationToken cancellationToken)
+    {
+        await _writer!.WriteLineAsync(medicao.ParaMensagemTcp().AsMemory(), cancellationToken);
+        string? resposta = await _reader!.ReadLineAsync(cancellationToken);
+        Console.WriteLine($"[GATEWAY] Servidor respondeu: {resposta}");
+        return resposta == "ACK";
     }
 
     public void Dispose()

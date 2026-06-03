@@ -22,7 +22,8 @@ public class GatewayTcpListener
     }
 
     /// <summary>
-    /// Aceita clientes em loop, criando uma thread por ligação (concorrência do TP1).
+    /// Aceita clientes em loop, criando uma thread dispatcher por ligação.
+    /// Medições DATA são enfileiradas; a persistência SQLite fica na thread worker.
     /// </summary>
     public void Iniciar()
     {

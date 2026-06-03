@@ -2,8 +2,7 @@
   "profiles": {
     "ServicoAnalise": {
       "commandName": "Project",
-      "launchBrowser": false,
-      "applicationUrl": "http://localhost:7002"
+      "launchBrowser": false
     }
   }
 }
